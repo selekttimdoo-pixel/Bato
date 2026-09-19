@@ -1,21 +1,16 @@
 package com.vipla.bato.data
 
-import androidx.room.Dao
-import androidx.room.Insert
-import androidx.room.Query
+import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface StenoDao {
-    @Insert
-    suspend fun insert(event: StenoEvent): Long
-
-    @Query("SELECT * FROM steno_events ORDER BY startTs DESC")
-    fun observeAll(): Flow<List<StenoEvent>>
-
-    @Query("SELECT * FROM steno_events ORDER BY startTs DESC LIMIT 1")
-    suspend fun latest(): StenoEvent?
-
-    @Query("SELECT * FROM steno_events WHERE rawText LIKE '%' || :query || '%' ORDER BY startTs DESC")
-    suspend fun search(query: String): List<StenoEvent>
+    @Insert suspend fun insert(event: StenoEvent): Long
+    @Query("SELECT * FROM steno_events ORDER BY startTs DESC") fun observeAll(): Flow<List<StenoEvent>>
+    @Query("SELECT * FROM steno_events ORDER BY startTs DESC LIMIT :limit") suspend fun recent(limit: Int): List<StenoEvent>
+    @Query("SELECT * FROM steno_events WHERE rawText LIKE '%' || :query || '%' ORDER BY startTs DESC") fun search(query: String): Flow<List<StenoEvent>>
+    @Insert suspend fun log(event: CockpitEvent): Long
+    @Query("SELECT * FROM cockpit_events ORDER BY timestamp DESC") fun observeLog(): Flow<List<CockpitEvent>>
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun saveState(state: ControlState)
+    @Query("SELECT * FROM control_state ORDER BY code") fun observeStates(): Flow<List<ControlState>>
 }
