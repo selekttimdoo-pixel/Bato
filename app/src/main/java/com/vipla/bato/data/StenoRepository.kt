@@ -6,6 +6,8 @@ class StenoRepository(private val dao: StenoDao) {
     val events = dao.observeAll()
     val cockpitLog = dao.observeLog()
     val controlStates = dao.observeStates()
+    val runtimeValues = dao.observeRuntime()
+    val knowledge = dao.observeKnowledge()
 
     suspend fun append(role: String, text: String, providerState: String = "LOCAL"): StenoEvent {
         val now = System.currentTimeMillis()
@@ -26,4 +28,9 @@ class StenoRepository(private val dao: StenoDao) {
     suspend fun log(code: String?, type: String, result: String, evidence: String) =
         dao.log(CockpitEvent(timestamp = System.currentTimeMillis(), controlCode = code, eventType = type, result = result, evidence = evidence))
     suspend fun saveState(state: ControlState) = dao.saveState(state)
+    suspend fun runtimeSnapshot(): Map<String, String> = dao.runtimeSnapshot().associate { it.key to it.value }
+    suspend fun putRuntime(key: String, value: String) = dao.putRuntime(RuntimeValue(key, value, System.currentTimeMillis()))
+    suspend fun putKnowledge(key: String, layer: String, content: String) = dao.putKnowledge(KnowledgeObject(key, layer, content, System.currentTimeMillis()))
+    suspend fun searchKnowledge(query: String) = dao.searchKnowledge(query)
+    suspend fun stenoCount() = dao.stenoCount()
 }
