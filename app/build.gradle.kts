@@ -12,8 +12,8 @@ android {
         applicationId = "com.vipla.bato"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0-cockpit"
+        versionCode = 3
+        versionName = "0.3.0-functional"
     }
     buildFeatures { compose = true }
     compileOptions {
