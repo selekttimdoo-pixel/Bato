@@ -32,5 +32,23 @@ data class ControlState(
     val forcedBlockPass: Boolean,
     val effectProven: Boolean,
     val light: String,
+    val updatedAt: Long,
+    val handler: String = "",
+    val observableResult: String = "",
+    val evidence: String = ""
+)
+
+@Entity(tableName = "runtime_values")
+data class RuntimeValue(
+    @PrimaryKey val key: String,
+    val value: String,
+    val updatedAt: Long
+)
+
+@Entity(tableName = "knowledge_objects")
+data class KnowledgeObject(
+    @PrimaryKey val key: String,
+    val layer: String,
+    val content: String,
     val updatedAt: Long
 )
