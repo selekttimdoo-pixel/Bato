@@ -3,7 +3,7 @@ package com.vipla.bato.data
 import android.content.Context
 import androidx.room.*
 
-@Database(entities = [StenoEvent::class, CockpitEvent::class, ControlState::class], version = 2, exportSchema = false)
+@Database(entities = [StenoEvent::class, CockpitEvent::class, ControlState::class, RuntimeValue::class, KnowledgeObject::class], version = 3, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun stenoDao(): StenoDao
     companion object {
