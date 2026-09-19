@@ -6,10 +6,31 @@ import androidx.room.PrimaryKey
 @Entity(tableName = "steno_events")
 data class StenoEvent(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val role: String,
     val rawText: String,
     val startTs: Long,
     val endTs: Long,
     val sessionId: String,
     val segmentId: String,
-    val speaker: String = "USER"
+    val providerState: String = "LOCAL"
+)
+
+@Entity(tableName = "cockpit_events")
+data class CockpitEvent(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val timestamp: Long,
+    val controlCode: String?,
+    val eventType: String,
+    val result: String,
+    val evidence: String
+)
+
+@Entity(tableName = "control_state")
+data class ControlState(
+    @PrimaryKey val code: String,
+    val localPass: Boolean,
+    val forcedBlockPass: Boolean,
+    val effectProven: Boolean,
+    val light: String,
+    val updatedAt: Long
 )
