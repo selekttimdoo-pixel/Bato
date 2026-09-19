@@ -17,6 +17,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val events = repo.events.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val cockpitLog = repo.cockpitLog.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val states = repo.controlStates.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val runtimeValues = repo.runtimeValues.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val knowledge = repo.knowledge.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     private val _busy = MutableStateFlow(false)
     val busy = _busy.asStateFlow()
     private val _lastAssistant = MutableStateFlow<String?>(null)
@@ -25,6 +27,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val selfTestSummary = _selfTestSummary.asStateFlow()
     private val _searchResults = MutableStateFlow<List<StenoEvent>>(emptyList())
     val searchResults = _searchResults.asStateFlow()
+    private val _knowledgeSearchResults = MutableStateFlow<List<KnowledgeObject>>(emptyList())
+    val knowledgeSearchResults = _knowledgeSearchResults.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            repo.putKnowledge("steno-wal", "STENO WAL", "Durable local raw event log committed before every remote provider request")
+            repo.putKnowledge("fast-graph", "FAST GRAPH", "Entity/relation retrieval hook consumes persisted STENO context; live remote graph remains unproven")
+            repo.putKnowledge("riznica", "Riznica", "Local Room knowledge-object vault used by Vault and Search")
+            repo.putKnowledge("serbian-lexicon", "Active Serbian Lexicon", "Serbian recognition locale and lexical provider hook; external corpus remains unproven")
+            repo.putKnowledge("serbian-grammar", "Serbian Grammar Graph", "Grammar-layer provider hook with Serbian speech locale; external graph remains unproven")
+        }
+    }
 
     fun endpoint(): String = prefs.getString("endpoint", "").orEmpty()
     fun saveEndpoint(value: String) { prefs.edit().putString("endpoint", value.trim()).apply() }
@@ -51,38 +65,59 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun executeControl(spec: ControlSpec) = viewModelScope.launch { executeAndPersist(spec, false) }
+
     fun testOne(spec: ControlSpec) = viewModelScope.launch {
-        val pass = LocalGuardEngine.evaluate(spec, LocalGuardEngine.positivePayload(spec))
-        val forced = LocalGuardEngine.evaluate(spec, LocalGuardEngine.forcedBlockPayload(spec))
-        persistResult(SelfTestResult(spec, pass, forced))
+        val actual = executeAndPersist(spec, false)
+        val forced = CockpitRuntime.execute(spec, repo.runtimeSnapshot(), true)
+        repo.log(spec.code, "FORCED_BLOCK_TEST", forced.status, forced.evidence)
+        val state = states.value.firstOrNull { it.code == spec.code }
+        repo.saveState((state ?: ControlState(spec.code, false, false, false, "DARK", System.currentTimeMillis())).copy(
+            localPass = actual.status != "FAIL", forcedBlockPass = forced.status == "BLOCKED",
+            light = if (actual.status == "PASS") "GREEN" else if (actual.status == "BLOCKED") "AMBER" else "DARK",
+            updatedAt = System.currentTimeMillis(), handler = actual.handler,
+            observableResult = actual.observable, evidence = actual.evidence
+        ))
     }
 
     fun testAll() = viewModelScope.launch {
-        var verified = 0
+        var pass = 0
+        var blocked = 0
+        var failed = 0
         CockpitCatalog.controls.forEach { spec ->
-            val result = SelfTestResult(
-                spec,
-                LocalGuardEngine.evaluate(spec, LocalGuardEngine.positivePayload(spec)),
-                LocalGuardEngine.evaluate(spec, LocalGuardEngine.forcedBlockPayload(spec))
-            )
-            if (result.verified) verified++
-            persistResult(result)
+            val actual = executeAndPersist(spec, false)
+            val forced = CockpitRuntime.execute(spec, repo.runtimeSnapshot(), true)
+            repo.log(spec.code, "FORCED_BLOCK_TEST", forced.status, forced.evidence)
+            when (actual.status) { "PASS" -> pass++; "BLOCKED" -> blocked++; else -> failed++ }
+            val prior = states.value.firstOrNull { it.code == spec.code }
+            repo.saveState((prior ?: ControlState(spec.code, false, false, false, "DARK", System.currentTimeMillis())).copy(
+                localPass = actual.status != "FAIL", forcedBlockPass = forced.status == "BLOCKED",
+                effectProven = actual.status == "PASS", light = when (actual.status) { "PASS" -> "GREEN"; "BLOCKED" -> "AMBER"; else -> "DARK" },
+                updatedAt = System.currentTimeMillis(), handler = actual.handler, observableResult = actual.observable, evidence = actual.evidence
+            ))
         }
-        _selfTestSummary.value = "$verified/51 local PASS + forced BLOCK; external effects remain unproven"
-        repo.log(null, "SELF_TEST_51", if (verified == 51) "LOCAL_PASS" else "LOCAL_FAIL", _selfTestSummary.value)
+        _selfTestSummary.value = "Behavioral handlers: PASS=$pass BLOCKED=$blocked FAIL=$failed; forced BLOCK called through same entry points"
+        repo.log(null, "BEHAVIORAL_TEST_51", if (failed == 0) "COMPLETED" else "FAIL", _selfTestSummary.value)
     }
 
-    private suspend fun persistResult(result: SelfTestResult) {
-        val localOk = result.pass.allowed
-        val blockOk = !result.forcedBlock.allowed
-        val effectProven = states.value.firstOrNull { it.code == result.spec.code }?.effectProven ?: false
-        val light = if (!localOk || !blockOk) "DARK" else if (effectProven) "GREEN" else "AMBER"
-        repo.saveState(ControlState(result.spec.code, localOk, blockOk, effectProven, light, System.currentTimeMillis()))
-        repo.log(result.spec.code, "LOCAL_SELF_TEST", if (localOk && blockOk) "PASS+BLOCK" else "FAIL", "${result.pass.evidence}; ${result.forcedBlock.evidence}")
+    private suspend fun executeAndPersist(spec: ControlSpec, forceBlock: Boolean): ActionResult {
+        val result = CockpitRuntime.execute(spec, repo.runtimeSnapshot(), forceBlock)
+        result.updates.forEach { (key, value) -> repo.putRuntime(key, value) }
+        repo.log(spec.code, "CONTROL_HANDLER", result.status, "${result.handler}: ${result.observable}; ${result.evidence}")
+        val light = when (result.status) { "PASS" -> "GREEN"; "BLOCKED" -> "AMBER"; else -> "DARK" }
+        repo.saveState(ControlState(spec.code, result.status != "FAIL", false, result.status == "PASS", light,
+            System.currentTimeMillis(), result.handler, result.observable, result.evidence))
+        return result
     }
 
     fun search(query: String) {
         if (query.isBlank()) { _searchResults.value = emptyList(); return }
-        viewModelScope.launch { repo.search(query).first().also { _searchResults.value = it } }
+        viewModelScope.launch {
+            _searchResults.value = repo.search(query).first()
+            _knowledgeSearchResults.value = repo.searchKnowledge(query)
+            repo.log(null, "SEARCH", "PASS", "Query '$query' returned ${_searchResults.value.size} STENO + ${_knowledgeSearchResults.value.size} knowledge results")
+        }
     }
+
+    fun recordMicState(state: String, evidence: String) = viewModelScope.launch { repo.log(null, "MIC", state, evidence) }
 }
