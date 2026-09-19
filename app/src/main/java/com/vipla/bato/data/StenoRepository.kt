@@ -1,38 +1,29 @@
 package com.vipla.bato.data
 
 import java.util.UUID
-import kotlinx.coroutines.flow.Flow
 
 class StenoRepository(private val dao: StenoDao) {
-    private val segmentGapMs = 120_000L
-    private val sessionGapMs = 600_000L
+    val events = dao.observeAll()
+    val cockpitLog = dao.observeLog()
+    val controlStates = dao.observeStates()
 
-    val events: Flow<List<StenoEvent>> = dao.observeAll()
-
-    suspend fun append(text: String, now: Long = System.currentTimeMillis()) {
-        val previous = dao.latest()
+    suspend fun append(role: String, text: String, providerState: String = "LOCAL"): StenoEvent {
+        val now = System.currentTimeMillis()
+        val previous = dao.recent(1).firstOrNull()
         val gap = previous?.let { now - it.endTs } ?: Long.MAX_VALUE
-
-        val sessionId = when {
-            previous == null || gap > sessionGapMs -> UUID.randomUUID().toString()
-            else -> previous.sessionId
-        }
-
-        val segmentId = when {
-            previous == null || gap > segmentGapMs -> UUID.randomUUID().toString()
-            else -> previous.segmentId
-        }
-
-        dao.insert(
-            StenoEvent(
-                rawText = text,
-                startTs = now,
-                endTs = now,
-                sessionId = sessionId,
-                segmentId = segmentId
-            )
+        val event = StenoEvent(
+            role = role, rawText = text, startTs = now, endTs = now,
+            sessionId = if (previous == null || gap > 600_000L) UUID.randomUUID().toString() else previous.sessionId,
+            segmentId = if (previous == null || gap > 120_000L) UUID.randomUUID().toString() else previous.segmentId,
+            providerState = providerState
         )
+        dao.insert(event)
+        return event
     }
 
-    suspend fun search(query: String): List<StenoEvent> = dao.search(query)
+    suspend fun context(limit: Int = 12): List<StenoEvent> = dao.recent(limit).reversed()
+    fun search(query: String) = dao.search(query)
+    suspend fun log(code: String?, type: String, result: String, evidence: String) =
+        dao.log(CockpitEvent(timestamp = System.currentTimeMillis(), controlCode = code, eventType = type, result = result, evidence = evidence))
+    suspend fun saveState(state: ControlState) = dao.saveState(state)
 }
