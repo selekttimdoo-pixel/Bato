@@ -44,6 +44,14 @@ class RemoteBatoVoiceEngine(private val context: Context, private val endpoint: 
             ))
             return
         }
+        if (!providerHonorsResolvedSerbianProsody()) {
+            onResult(VoiceResult(
+                "BLOCKED", "NONE", "NONE", "NONE", "sr-RS",
+                "PROSODY_PROVIDER_NOT_VERIFIED", "NONE", 0, normalized,
+                "Pronunciation resolved locally, but no configured provider is proven to honor four Serbian accents, post-accentual length and focus; no text/audio was transmitted"
+            ))
+            return
+        }
         val requestGeneration = synchronized(this) { generation += 1; generation }
         Thread {
             var connection: HttpsURLConnection? = null
@@ -113,6 +121,7 @@ class RemoteBatoVoiceEngine(private val context: Context, private val endpoint: 
             } finally { connection?.disconnect() }
         }.start()
     }
+    private fun providerHonorsResolvedSerbianProsody(): Boolean = false
     override fun shutdown() = synchronized(this) { generation += 1; player?.release(); player = null }
     override fun identity() = "REMOTE_SERBIAN_MALE_QA_CANDIDATE_NO_SILENT_FALLBACK"
 }
