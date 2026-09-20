@@ -2,8 +2,10 @@ const GATEWAY="https://ai-gateway.vercel.sh/v4/ai/speech-model";
 const MODEL=process.env.BATO_VOICE_MODEL||"openai/tts-1-hd";
 const VOICE=process.env.BATO_VOICE_ID||"onyx";
 
+
 export default async function handler(req,res){
  if(req.method!=="POST")return res.status(405).json({error:"POST required",voice_provenance:"BLOCKED"});
+ if(process.env.BATO_VOICE_PHYSICALLY_ACCEPTED!=="true")return res.status(503).json({error:"BATO voice is blocked: no native Serbian adult male provider has passed physical listening QA",voice_provenance:"BLOCKED",voice_fallback:"NONE",rejected_candidate:"openai/tts-1-hd/onyx"});
  const token=process.env.AI_GATEWAY_API_KEY||process.env.VERCEL_OIDC_TOKEN;
  if(!token)return res.status(503).json({error:"Voice provider credential unavailable",voice_provenance:"BLOCKED"});
  const text=String(req.body?.text||"").trim();
@@ -17,3 +19,4 @@ export default async function handler(req,res){
   return res.status(200).send(audio);
  }catch(error){return res.status(502).json({error:"Voice request failed",detail:String(error?.message||error),voice_provenance:"BLOCKED"})}
 }
+
