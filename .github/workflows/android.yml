@@ -33,6 +33,9 @@ jobs:
         with:
           gradle-version: '8.9'
 
+      - name: Serbian prosody regression tests
+        run: gradle --no-daemon --stacktrace :app:testDebugUnitTest
+
       - name: Build debug APK
         run: gradle --no-daemon --stacktrace :app:assembleDebug
 
