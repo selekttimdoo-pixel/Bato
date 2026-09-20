@@ -31,7 +31,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.vipla.bato.cockpit.*
 import com.vipla.bato.data.*
 import com.vipla.bato.ui.MainViewModel
-import com.vipla.bato.voice.AndroidSerbianVoiceEngine
+import com.vipla.bato.voice.RemoteBatoVoiceEngine
 import java.text.DateFormat
 import java.util.*
 
@@ -56,16 +56,16 @@ fun BatoApp(vm: MainViewModel = viewModel()) {
     val lastAssistant by vm.lastAssistant.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var ttsEnabled by remember { mutableStateOf(true) }
-    val voiceEngine = remember { AndroidSerbianVoiceEngine(context) }
+    val voiceEngine = remember { RemoteBatoVoiceEngine(context) }
     DisposableEffect(Unit) { onDispose { voiceEngine.shutdown() } }
     LaunchedEffect(lastAssistant) {
-        lastAssistant?.takeIf { ttsEnabled }?.let { text -> voiceEngine.speak(text) { result -> vm.recordVoiceState(result.status, "${result.engine}|${result.voiceName}|${result.evidence}|NORMALIZED=${result.normalizedText}") } }
+        lastAssistant?.takeIf { ttsEnabled }?.let { text -> voiceEngine.speak(text) { r -> vm.recordVoiceState(r.status, "VOICE_PROVIDER=${r.provider}|VOICE_MODEL=${r.model}|VOICE_ID=${r.voiceId}|VOICE_LOCALE=${r.locale}|VOICE_PROVENANCE=${r.provenance}|VOICE_FALLBACK=${r.fallback}|TTS_HTTP_STATUS=${r.httpStatus}|${r.evidence}|NORMALIZED=${r.normalizedText}") } }
     }
 
     Scaffold(
         topBar = { Surface(shadowElevation = 4.dp) { Column(Modifier.fillMaxWidth().padding(12.dp)) {
             Text("VIPLA / BATO COCKPIT", fontWeight = FontWeight.Bold)
-            Text("Android v0.3 · functional handlers · external effects are never inferred", style = MaterialTheme.typography.bodySmall)
+            Text("Android v0.4.1 · remote BATO voice · external effects are never inferred", style = MaterialTheme.typography.bodySmall)
         } } },
         bottomBar = { NavigationBar {
             BatoTab.entries.forEach { item -> NavigationBarItem(selected = tab == item, onClick = { tab = item }, icon = { Text(item.title.take(2)) }, label = { Text(item.title, maxLines = 1) }) }
