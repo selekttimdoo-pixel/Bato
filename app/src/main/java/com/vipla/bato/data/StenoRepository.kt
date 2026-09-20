@@ -1,82 +1,52 @@
 package com.vipla.bato.data
 
+import java.text.Normalizer
 import java.util.UUID
 
-class StenoRepository(private val dao: StenoDao) {
-    data class RetrievalBundle(
-        val steno: List<StenoEvent>,
-        val riznica: List<KnowledgeObject>,
-        val fastGraph: List<KnowledgeObject>
-    )
+data class RetrievedItem(val id: String, val sourceType: String, val timestamp: Long?, val canonicalText: String, val confidence: Double, val provenance: String, val entityId: String? = null, val clusterId: String? = null, val domain: String? = null)
+data class RetrievalBundle(val steno: List<RetrievedItem>, val riznica: List<RetrievedItem>, val fastGraph: List<RetrievedItem>, val lexicalGrammar: List<RetrievedItem>, val resolvedEntities: List<String>, val graphResolution: String, val ambiguityCandidates: List<String>)
 
-    val events = dao.observeAll()
-    val cockpitLog = dao.observeLog()
-    val controlStates = dao.observeStates()
-    val runtimeValues = dao.observeRuntime()
-    val knowledge = dao.observeKnowledge()
+class StenoRepository(private val dao: StenoDao) {
+    val events = dao.observeAll(); val cockpitLog = dao.observeLog(); val controlStates = dao.observeStates()
+    val runtimeValues = dao.observeRuntime(); val knowledge = dao.observeKnowledge()
 
     suspend fun append(role: String, text: String, providerState: String = "LOCAL"): StenoEvent {
-        val now = System.currentTimeMillis()
-        val previous = dao.recent(1).firstOrNull()
-        val gap = previous?.let { now - it.endTs } ?: Long.MAX_VALUE
-        val event = StenoEvent(
-            role = role, rawText = text, startTs = now, endTs = now,
+        val now = System.currentTimeMillis(); val previous = dao.recent(1).firstOrNull(); val gap = previous?.let { now - it.endTs } ?: Long.MAX_VALUE
+        val event = StenoEvent(role = role, rawText = text, startTs = now, endTs = now,
             sessionId = if (previous == null || gap > 600_000L) UUID.randomUUID().toString() else previous.sessionId,
-            segmentId = if (previous == null || gap > 120_000L) UUID.randomUUID().toString() else previous.segmentId,
-            providerState = providerState
-        )
-        dao.insert(event)
-        return event
+            segmentId = if (previous == null || gap > 120_000L) UUID.randomUUID().toString() else previous.segmentId, providerState = providerState)
+        val saved = event.copy(id = dao.insert(event)); if (role == "USER") indexEntities(saved); return saved
     }
 
     suspend fun context(limit: Int = 12): List<StenoEvent> = dao.recent(limit).reversed()
-    suspend fun retrieve(query: String, excludeEventId: Long, limit: Int = 6): RetrievalBundle {
-        val terms = terms(query)
-        val steno = dao.retrievalWindow(250)
-            .asSequence()
-            .filter { it.id != excludeEventId && it.role in setOf("USER", "ASSISTANT") }
-            .map { it to score(it.rawText, terms) }
-            .filter { it.second > 0 }
-            .sortedWith(compareByDescending<Pair<StenoEvent, Int>> { it.second }.thenByDescending { it.first.startTs })
-            .take(limit).map { it.first }.toList()
-        val allKnowledge = dao.allKnowledge()
-        val fastGraph = allKnowledge.filter { it.layer.contains("FAST GRAPH", true) || it.key.contains("fast-graph", true) }
-            .take(4)
-        val riznica = allKnowledge.asSequence()
-            .filterNot { it in fastGraph }
-            .map { it to score("${it.key} ${it.layer} ${it.content}", terms) }
-            .filter { it.second > 0 }
-            .sortedWith(compareByDescending<Pair<KnowledgeObject, Int>> { it.second }.thenByDescending { it.first.updatedAt })
-            .take(limit).map { it.first }.toList()
-        return RetrievalBundle(steno, riznica, fastGraph)
+    suspend fun retrieve(query: String, excludeEventId: Long, limit: Int = 8): RetrievalBundle {
+        val q = features(query); val all = dao.allKnowledge(); val graph = all.filter { it.layer == "FAST GRAPH" }
+            .map { it to semanticScore(q, features("${it.key} ${it.content}")) }.filter { it.second >= .18 }.sortedByDescending { it.second }.take(4)
+        val entities = graph.map { it.first.key.removePrefix("entity:") }; val expanded = q.copy(tokens = q.tokens + graph.flatMap { features(it.first.content).tokens })
+        val steno = dao.retrievalWindow(1000).asSequence().filter { it.id != excludeEventId && it.role in setOf("USER", "ASSISTANT") }
+            .map { it to semanticScore(expanded, features(it.rawText)) + if (query.contains(INDIRECT)) 0.12 else 0.0 }
+            .filter { it.second >= .16 }.sortedWith(compareByDescending<Pair<StenoEvent, Double>> { it.second }.thenByDescending { it.first.startTs })
+            .distinctBy { normalize(it.first.rawText) }.take(limit).map { (e, score) -> RetrievedItem("STENO:${e.id}", if (e.providerState.contains("IMPORTED")) "IMPORTED_STENO" else "LOCAL_STENO", e.startTs, e.rawText, score.coerceAtMost(1.0), e.providerState, entities.firstOrNull(), graph.firstOrNull()?.first?.content?.field("cluster"), graph.firstOrNull()?.first?.content?.field("domain")) }.toList()
+        val graphItems = graph.map { (k, score) -> RetrievedItem("GRAPH:${k.key}", "FAST_GRAPH", k.updatedAt, k.content, score.coerceAtMost(1.0), "LOCAL_RIZNICA:${k.key}", k.key.removePrefix("entity:"), k.content.field("cluster"), k.content.field("domain")) }
+        val lexical = all.filter { it.layer in setOf("Active Serbian Lexicon", "Serbian Grammar Graph") }.map { it to semanticScore(q, features(it.content)) }.filter { it.second >= .22 }.sortedByDescending { it.second }.take(3).map { it.first.asItem("LEXICAL_GRAMMAR", it.second) }
+        val riznica = all.asSequence().filter { it.layer !in setOf("FAST GRAPH", "Active Serbian Lexicon", "Serbian Grammar Graph") }.map { it to semanticScore(expanded, features("${it.key} ${it.content}")) }.filter { it.second >= .2 }.sortedByDescending { it.second }.take(limit).map { it.first.asItem("RIZNICA", it.second) }.toList()
+        val ambiguous = if (graph.size >= 2 && kotlin.math.abs(graph[0].second - graph[1].second) < .05) graph.take(2).map { it.first.key.removePrefix("entity:") } else emptyList()
+        val resolution = if (ambiguous.isNotEmpty()) "AMBIGUOUS:${ambiguous.joinToString("|")}" else if (entities.isNotEmpty()) "RESOLVED:${entities.joinToString()}" else "UNRESOLVED"
+        return RetrievalBundle(steno, riznica, graphItems, lexical, entities, resolution, ambiguous)
     }
 
-    private fun terms(text: String): Set<String> = text.lowercase()
-        .replace(Regex("[^\\p{L}\\p{N}-]+"), " ").split(' ')
-        .filter { it.length >= 3 && it !in STOP_WORDS }.toSet()
-
-    private fun score(text: String, queryTerms: Set<String>): Int {
-        if (queryTerms.isEmpty()) return 0
-        val candidate = terms(text)
-        return queryTerms.fold(0) { total, term ->
-            total + when {
-                term in candidate -> if (term.any(Char::isDigit) || term.contains('-')) 6 else 2
-                candidate.any { it.contains(term) || term.contains(it) } -> 1
-                else -> 0
-            }
-        }
+    private suspend fun indexEntities(event: StenoEvent) = extractEntities(event.rawText).take(6).forEach { entity ->
+        val slug = normalize(entity).replace(' ', '-'); dao.putKnowledge(KnowledgeObject("entity:$slug", "FAST GRAPH", "entity=$entity; aliases=$entity; cluster=conversation:$slug; domain=conversation; evidence=STENO:${event.id}; relation=MENTIONED_IN", event.startTs))
     }
+    private data class Features(val tokens: Set<String>, val phrases: Set<String>, val entities: Set<String>)
+    private fun features(text: String): Features { val tokens = normalize(text).split(' ').filter { it.length >= 3 && it !in STOP }.toSet(); val list=tokens.toList(); return Features(tokens, (list.windowed(2)+list.windowed(3)).map { it.joinToString(" ") }.toSet(), extractEntities(text).map(::normalize).toSet()) }
+    private fun semanticScore(q: Features, c: Features): Double { if (q.tokens.isEmpty() && q.entities.isEmpty()) return 0.0; val code=q.tokens.any { it.any(Char::isDigit)&&it in c.tokens }; return (overlap(q.entities,c.entities) * 0.5 + overlap(q.phrases,c.phrases) * 0.3 + overlap(q.tokens,c.tokens) * 0.2 + if (code) 0.5 else 0.0).coerceAtMost(1.0) }
+    private fun overlap(a:Set<String>,b:Set<String>)=if(a.isEmpty()||b.isEmpty())0.0 else a.intersect(b).size.toDouble()/a.size
+    private fun extractEntities(text:String):Set<String> = Regex("\\b[\\p{L}]{2,}-?\\d{2,}\\b").findAll(text).map{it.value}.toSet() + Regex("(?<![.!?]\\s)\\b[\\p{Lu}][\\p{L}]{2,}(?:\\s+[\\p{Lu}][\\p{L}]{2,}){0,3}").findAll(text).map{it.value}.toSet() + ALIASES.filterKeys { normalize(text).contains(it) }.values.flatten()
+    private fun normalize(text:String)=Normalizer.normalize(text.lowercase(),Normalizer.Form.NFD).replace(Regex("\\p{M}+"),"").replace(Regex("[^\\p{L}\\p{N}-]+")," ").trim()
+    private fun String.field(name:String)=substringAfter("$name=","").substringBefore(';').ifBlank{null}
+    private fun KnowledgeObject.asItem(type:String,score:Double)=RetrievedItem("RIZNICA:$key",type,updatedAt,content,score.coerceAtMost(1.0),"LOCAL_RIZNICA:$key")
+    companion object { private val INDIRECT=Regex("(?i)ono|tome|toga|ranije|prethod|nastavi|vrati|prvi|isto"); private val STOP=setOf("koji","koje","koja","kako","šta","sta","moje","moja","moj","test","ime","danas","dan","ovaj","ono","sam","smo","ste","biti","ima","the","and","what","which","nastavi","priču","pricu"); private val ALIASES=mapOf("rimsko carstvo" to setOf("ROMAN_EMPIRE"),"roman empire" to setOf("ROMAN_EMPIRE"),"rim" to setOf("ROMAN_EMPIRE"),"zapadno rimsko" to setOf("WESTERN_ROMAN_EMPIRE"),"vipla" to setOf("VIPLA_BATO"),"bato" to setOf("VIPLA_BATO")) }
 
-    companion object {
-        private val STOP_WORDS = setOf("koji", "koje", "koja", "kako", "šta", "sta", "moje", "moja", "moj", "test", "ime", "danas", "dan", "ovaj", "ono", "sam", "smo", "ste", "biti", "ima", "the", "and", "what", "which")
-    }
-    fun search(query: String) = dao.search(query)
-    suspend fun log(code: String?, type: String, result: String, evidence: String) =
-        dao.log(CockpitEvent(timestamp = System.currentTimeMillis(), controlCode = code, eventType = type, result = result, evidence = evidence))
-    suspend fun saveState(state: ControlState) = dao.saveState(state)
-    suspend fun runtimeSnapshot(): Map<String, String> = dao.runtimeSnapshot().associate { it.key to it.value }
-    suspend fun putRuntime(key: String, value: String) = dao.putRuntime(RuntimeValue(key, value, System.currentTimeMillis()))
-    suspend fun putKnowledge(key: String, layer: String, content: String) = dao.putKnowledge(KnowledgeObject(key, layer, content, System.currentTimeMillis()))
-    suspend fun searchKnowledge(query: String) = dao.searchKnowledge(query)
-    suspend fun stenoCount() = dao.stenoCount()
+    fun search(query:String)=dao.search(query); suspend fun log(code:String?,type:String,result:String,evidence:String)=dao.log(CockpitEvent(timestamp=System.currentTimeMillis(),controlCode=code,eventType=type,result=result,evidence=evidence)); suspend fun saveState(state:ControlState)=dao.saveState(state); suspend fun runtimeSnapshot():Map<String,String> = dao.runtimeSnapshot().associate{it.key to it.value}; suspend fun putRuntime(key:String,value:String)=dao.putRuntime(RuntimeValue(key,value,System.currentTimeMillis())); suspend fun putKnowledge(key:String,layer:String,content:String)=dao.putKnowledge(KnowledgeObject(key,layer,content,System.currentTimeMillis())); suspend fun searchKnowledge(query:String)=dao.searchKnowledge(query); suspend fun stenoCount()=dao.stenoCount()
 }
