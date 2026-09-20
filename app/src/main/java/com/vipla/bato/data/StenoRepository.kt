@@ -23,15 +23,18 @@ class StenoRepository(private val dao: StenoDao) {
         val q = features(query); val referring = INDIRECT.containsMatchIn(query); val direct = aliasEntities(query)
         val anchors = if (referring) recent.takeLast(8) else recent.takeLast(2)
         val anchorFeatures = features(anchors.joinToString(" ") { it.rawText })
+        val contextualAliases = if (referring) aliasEntities(anchors.joinToString(" ") { it.rawText }) else emptySet()
+        val resolvedAliases = if (direct.isNotEmpty()) direct else contextualAliases
         val all = dao.allKnowledge(); val graph = all.filter { it.layer == "FAST GRAPH" }.map { card ->
             val cf = features("${card.key} ${card.content}")
-            val directBoost = if (direct.any { card.content.contains(it, true) || card.key.contains(it.lowercase(), true) }) .75 else 0.0
+            val directBoost = if (resolvedAliases.any { card.content.contains(it, true) || card.key.contains(it.lowercase(), true) }) .75 else 0.0
             val score = semanticScore(q, cf) + (if (referring) semanticScore(anchorFeatures, cf) * .65 else 0.0) + directBoost
             card to score.coerceAtMost(1.0)
         }.filter { it.second >= .18 }.sortedByDescending { it.second }.take(4)
-        val contextualWinner = graph.firstOrNull()?.takeIf { direct.isNotEmpty() || referring && it.second >= .28 }
+        val contextualWinner = graph.firstOrNull()?.takeIf { resolvedAliases.isNotEmpty() || referring && it.second >= .28 }
         val entities = when {
             direct.isNotEmpty() -> direct.toList()
+            contextualAliases.isNotEmpty() -> contextualAliases.toList()
             contextualWinner != null -> listOf(contextualWinner.first.key.removePrefix("entity:"))
             else -> graph.map { it.first.key.removePrefix("entity:") }
         }
@@ -57,12 +60,12 @@ class StenoRepository(private val dao: StenoDao) {
     private fun features(text: String): Features { val tokens = normalize(text).split(' ').filter { it.length >= 3 && it !in STOP }.toSet(); val list=tokens.toList(); return Features(tokens, (list.windowed(2)+list.windowed(3)).map { it.joinToString(" ") }.toSet(), extractEntities(text).map(::normalize).toSet()) }
     private fun semanticScore(q: Features, c: Features): Double { if (q.tokens.isEmpty() && q.entities.isEmpty()) return 0.0; val code=q.tokens.any { it.any(Char::isDigit)&&it in c.tokens }; return (overlap(q.entities,c.entities) * 0.5 + overlap(q.phrases,c.phrases) * 0.3 + overlap(q.tokens,c.tokens) * 0.2 + if (code) 0.5 else 0.0).coerceAtMost(1.0) }
     private fun overlap(a:Set<String>,b:Set<String>)=if(a.isEmpty()||b.isEmpty())0.0 else a.intersect(b).size.toDouble()/a.size
-    private fun extractEntities(text:String):Set<String> = Regex("\\b[\\p{L}]{2,}-?\\d{2,}\\b").findAll(text).map{it.value}.toSet() + Regex("(?<![.!?]\\s)\\b[\\p{Lu}][\\p{L}]{2,}(?:\\s+[\\p{Lu}][\\p{L}]{2,}){0,3}").findAll(text).map{it.value}.toSet() + ALIASES.filterKeys { normalize(text).contains(it) }.values.flatten()
+    private fun extractEntities(text:String):Set<String> = Regex("\\b[\\p{L}]{2,}-?\\d{2,}\\b").findAll(text).map{it.value}.toSet() + Regex("(?<![.!?]\\s)\\b[\\p{Lu}][\\p{L}]{2,}(?:\\s+[\\p{Lu}][\\p{L}]{2,}){0,3}").findAll(text).map{it.value}.filter { normalize(it) !in NON_ENTITIES }.toSet() + ALIASES.filterKeys { normalize(text).contains(it) }.values.flatten()
     private fun normalize(text:String)=Normalizer.normalize(text.lowercase(),Normalizer.Form.NFD).replace(Regex("\\p{M}+"),"").replace(Regex("[^\\p{L}\\p{N}-]+")," ").trim()
     private fun String.field(name:String)=substringAfter("$name=","").substringBefore(';').ifBlank{null}
     private fun KnowledgeObject.asItem(type:String,score:Double)=RetrievedItem("RIZNICA:$key",type,updatedAt,content,score.coerceAtMost(1.0),"LOCAL_RIZNICA:$key")
     private fun aliasEntities(text:String)=ALIASES.filterKeys { normalize(text).contains(it) }.values.flatten().toSet()
-    companion object { private val INDIRECT=Regex("(?iu)(?:\\bto\\b|ono|tome|toga|onda|očigledno|ocigledno|pitao|pitala|pitanje|ranije|prethod|nastavi|vrati|prvi|isto|ako je nastavilo)"); private val STOP=setOf("koji","koje","koja","kako","šta","sta","moje","moja","moj","test","ime","danas","dan","ovaj","ono","sam","smo","ste","biti","ima","the","and","what","which","nastavi","priču","pricu"); private val ALIASES=mapOf("rimsko carstvo" to setOf("ROMAN_EMPIRE"),"roman empire" to setOf("ROMAN_EMPIRE"),"rim" to setOf("ROMAN_EMPIRE"),"zapadno rimsko" to setOf("WESTERN_ROMAN_EMPIRE"),"istocno rimsko" to setOf("EASTERN_ROMAN_EMPIRE"),"istočno rimsko" to setOf("EASTERN_ROMAN_EMPIRE"),"vizantij" to setOf("BYZANTINE_EMPIRE"),"vipla" to setOf("VIPLA_BATO"),"bato" to setOf("VIPLA_BATO")) }
+    companion object { private val INDIRECT=Regex("(?iu)(?:\\bto\\b|ono|tome|toga|onda|očigledno|ocigledno|pitao|pitala|pitanje|ranije|prethod|nastavi|vrati|prvi|isto|ako je nastavilo)"); private val NON_ENTITIES=setOf("onda","ono","to","tome","toga","ocigledno","pitao","pitala","pitanje","kako","sta","sto","zasto"); private val STOP=setOf("koji","koje","koja","kako","šta","sta","moje","moja","moj","test","ime","danas","dan","ovaj","ono","sam","smo","ste","biti","ima","the","and","what","which","nastavi","priču","pricu"); private val ALIASES=mapOf("rimsko carstvo" to setOf("ROMAN_EMPIRE"),"roman empire" to setOf("ROMAN_EMPIRE"),"rim" to setOf("ROMAN_EMPIRE"),"zapadno rimsko" to setOf("WESTERN_ROMAN_EMPIRE"),"istocno rimsko" to setOf("EASTERN_ROMAN_EMPIRE"),"istočno rimsko" to setOf("EASTERN_ROMAN_EMPIRE"),"vizantij" to setOf("BYZANTINE_EMPIRE"),"vipla" to setOf("VIPLA_BATO"),"bato" to setOf("VIPLA_BATO")) }
 
     fun search(query:String)=dao.search(query); suspend fun log(code:String?,type:String,result:String,evidence:String)=dao.log(CockpitEvent(timestamp=System.currentTimeMillis(),controlCode=code,eventType=type,result=result,evidence=evidence)); suspend fun saveState(state:ControlState)=dao.saveState(state); suspend fun runtimeSnapshot():Map<String,String> = dao.runtimeSnapshot().associate{it.key to it.value}; suspend fun putRuntime(key:String,value:String)=dao.putRuntime(RuntimeValue(key,value,System.currentTimeMillis())); suspend fun putKnowledge(key:String,layer:String,content:String)=dao.putKnowledge(KnowledgeObject(key,layer,content,System.currentTimeMillis())); suspend fun searchKnowledge(query:String)=dao.searchKnowledge(query); suspend fun stenoCount()=dao.stenoCount()
 }
