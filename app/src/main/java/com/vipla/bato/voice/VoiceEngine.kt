@@ -1,5 +1,7 @@
 package com.vipla.bato.voice
+
 import android.content.Context
+import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.Voice
@@ -8,21 +10,107 @@ import java.net.URL
 import java.util.Locale
 import javax.net.ssl.HttpsURLConnection
 
-data class VoiceResult(val status:String,val provider:String,val model:String,val voiceId:String,val locale:String,val provenance:String,val fallback:String,val httpStatus:Int,val normalizedText:String,val evidence:String)
-interface VoiceEngine { fun speak(text:String,onResult:(VoiceResult)->Unit={});fun shutdown();fun identity():String }
-object SerbianSpeechNormalizer{
- private val abbr=mapOf("dr." to "doktor","npr." to "na primer","itd." to "i tako dalje","tj." to "to jest","AI" to "veštačka inteligencija","VIPLA" to "Vipla","BATO" to "Bato")
- fun normalize(text:String):String{var out=text.trim().replace(Regex("\\s+")," ");abbr.forEach{(a,b)->out=out.replace(a,b)};out=out.replace(Regex("(\\d{4})-(\\d{2})-(\\d{2})")){m->"${m.groupValues[3]}. ${m.groupValues[2]}. ${m.groupValues[1]}. godine"};return out.replace("/"," kroz ").replace("—",", ")}
+data class VoiceResult(
+    val status: String, val provider: String, val model: String, val voiceId: String,
+    val locale: String, val provenance: String, val fallback: String, val httpStatus: Int,
+    val normalizedText: String, val evidence: String, val audioFormat: String = "NONE",
+    val bytesReceived: Long = 0, val decode: String = "NOT_ATTEMPTED",
+    val playback: String = "NOT_STARTED"
+)
+interface VoiceEngine { fun speak(text: String, onResult: (VoiceResult) -> Unit = {}); fun shutdown(); fun identity(): String }
+
+object SerbianSpeechNormalizer {
+    private val abbr = mapOf("dr." to "doktor", "npr." to "na primer", "itd." to "i tako dalje", "tj." to "to jest", "AI" to "veštačka inteligencija", "VIPLA" to "Vipla", "BATO" to "Bato")
+    fun normalize(text: String): String {
+        var out = text.trim().replace(Regex("\\s+"), " ")
+        abbr.forEach { (a, b) -> out = out.replace(a, b) }
+        out = out.replace(Regex("(\\d{4})-(\\d{2})-(\\d{2})")) { m -> "${m.groupValues[3]}. ${m.groupValues[2]}. ${m.groupValues[1]}. godine" }
+        return out.replace("/", " kroz ").replace("—", ", ")
+    }
 }
-class RemoteBatoVoiceEngine(private val context:Context,private val endpoint:String="https://bato-sigma.vercel.app/api/voice"):VoiceEngine{
- @Volatile private var player:MediaPlayer?=null
- override fun speak(text:String,onResult:(VoiceResult)->Unit){val n=SerbianSpeechNormalizer.normalize(text);Thread{try{val c=URL(endpoint).openConnection() as HttpsURLConnection;c.requestMethod="POST";c.connectTimeout=15_000;c.readTimeout=90_000;c.doOutput=true;c.setRequestProperty("Content-Type","application/json");val escaped=n.replace("\\","\\\\").replace("\"","\\\"").replace("\n","\\n");c.outputStream.use{it.write("{\"text\":\"$escaped\"}".toByteArray())};val status=c.responseCode;if(status !in 200..299)throw IllegalStateException("TTS_HTTP_STATUS=$status ${(c.errorStream?.bufferedReader()?.readText()).orEmpty().take(240)}");val audio=File.createTempFile("bato-voice-",".mp3",context.cacheDir);c.inputStream.use{i->audio.outputStream().use{i.copyTo(it)}};val r=VoiceResult("AUDIO_PLAYING",c.getHeaderField("X-Bato-Voice-Provider")?:"unreported",c.getHeaderField("X-Bato-Voice-Model")?:"unreported",c.getHeaderField("X-Bato-Voice-Id")?:"unreported",c.getHeaderField("X-Bato-Voice-Locale")?:"sr-RS",c.getHeaderField("X-Bato-Voice-Provenance")?:"PROVIDER_REAL","NONE",status,n,"Remote audio received from physically accepted provider");c.disconnect();val mp=MediaPlayer();player?.release();player=mp;mp.setDataSource(audio.absolutePath);mp.setOnCompletionListener{it.release();audio.delete();player=null};mp.setOnErrorListener{p,_,_->p.release();audio.delete();player=null;true};mp.prepare();mp.start();onResult(r)}catch(e:Exception){onResult(VoiceResult("BLOCKED","NONE","NONE","NONE","sr-RS","BLOCKED","NONE",0,n,"BATO voice is disabled until native Serbian male voice passes physical listening QA; ${e.message}"))}}.start()}
- override fun shutdown(){player?.release();player=null};override fun identity()="BATO_VOICE_BLOCKED_PENDING_PHYSICAL_QA"
+
+class RemoteBatoVoiceEngine(private val context: Context, private val endpoint: String = "https://bato-sigma.vercel.app/api/voice") : VoiceEngine {
+    @Volatile private var player: MediaPlayer? = null
+    @Volatile private var generation = 0L
+    override fun speak(text: String, onResult: (VoiceResult) -> Unit) {
+        val normalized = SerbianSpeechNormalizer.normalize(text)
+        val requestGeneration = synchronized(this) { generation += 1; generation }
+        Thread {
+            var connection: HttpsURLConnection? = null
+            var audioFile: File? = null
+            try {
+                connection = URL(endpoint).openConnection() as HttpsURLConnection
+                connection.requestMethod = "POST"; connection.connectTimeout = 15_000; connection.readTimeout = 90_000
+                connection.doOutput = true; connection.setRequestProperty("Content-Type", "application/json")
+                val escaped = normalized.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+                connection.outputStream.use { it.write("{\"text\":\"$escaped\"}".toByteArray()) }
+                val http = connection.responseCode
+                if (http !in 200..299) {
+                    val detail = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty().take(400)
+                    throw IllegalStateException("TTS_HTTP_STATUS=$http $detail")
+                }
+                val format = connection.contentType?.substringBefore(';')?.lowercase().orEmpty()
+                if (!format.startsWith("audio/")) throw IllegalStateException("TTS_FORMAT_INVALID=$format")
+                val suffix = when (format) { "audio/wav", "audio/x-wav" -> ".wav"; "audio/ogg" -> ".ogg"; else -> ".mp3" }
+                audioFile = File.createTempFile("bato-voice-", suffix, context.cacheDir)
+                val bytes = connection.inputStream.use { input -> audioFile.outputStream().use { output -> input.copyTo(output) } }
+                if (bytes < 128) throw IllegalStateException("TTS_AUDIO_EMPTY bytes=$bytes")
+                val base = VoiceResult(
+                    "AUDIO_RECEIVED", connection.getHeaderField("X-Bato-Voice-Provider") ?: "unreported",
+                    connection.getHeaderField("X-Bato-Voice-Model") ?: "unreported",
+                    connection.getHeaderField("X-Bato-Voice-Id") ?: "unreported",
+                    connection.getHeaderField("X-Bato-Voice-Locale") ?: "sr-RS",
+                    connection.getHeaderField("X-Bato-Voice-Provenance") ?: "QA_CANDIDATE",
+                    connection.getHeaderField("X-Bato-Voice-Fallback") ?: "NONE", http, normalized,
+                    "Remote audio body persisted before decode", format, bytes, "PENDING", "NOT_STARTED"
+                )
+                onResult(base)
+                val file = requireNotNull(audioFile)
+                val mp = MediaPlayer()
+                synchronized(this) {
+                    if (requestGeneration != generation) { mp.release(); file.delete(); return@Thread }
+                    player?.release(); player = mp
+                }
+                mp.setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_ASSISTANT).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+                mp.setDataSource(file.absolutePath)
+                mp.setOnPreparedListener { prepared ->
+                    onResult(base.copy(status = "DECODE_SUCCESS", evidence = "MediaPlayer prepared the downloaded $format payload", decode = "SUCCESS", playback = "READY"))
+                    prepared.start()
+                    onResult(base.copy(status = "PLAYBACK_STARTED", evidence = "MediaPlayer.isPlaying=${prepared.isPlaying}", decode = "SUCCESS", playback = if (prepared.isPlaying) "STARTED" else "START_REQUESTED"))
+                }
+                mp.setOnCompletionListener { completed ->
+                    onResult(base.copy(status = "PLAYBACK_COMPLETED", evidence = "Android MediaPlayer completion callback received", decode = "SUCCESS", playback = "COMPLETED"))
+                    synchronized(this) { if (player === completed) player = null }
+                    completed.release(); file.delete()
+                }
+                mp.setOnErrorListener { failed, what, extra ->
+                    onResult(base.copy(status = "PLAYBACK_FAILED", provenance = "BLOCKED", evidence = "MediaPlayer error what=$what extra=$extra", decode = "FAILED", playback = "FAILED"))
+                    synchronized(this) { if (player === failed) player = null }
+                    failed.release(); file.delete(); true
+                }
+                mp.prepareAsync()
+            } catch (error: Exception) {
+                audioFile?.delete()
+                onResult(VoiceResult("BLOCKED", "NONE", "NONE", "NONE", "sr-RS", "BLOCKED", "NONE", connection?.responseCode ?: 0, normalized, error.message ?: error.javaClass.simpleName, playback = "FAILED"))
+            } finally { connection?.disconnect() }
+        }.start()
+    }
+    override fun shutdown() = synchronized(this) { generation += 1; player?.release(); player = null }
+    override fun identity() = "REMOTE_SERBIAN_MALE_QA_CANDIDATE_NO_SILENT_FALLBACK"
 }
-class AndroidSystemVoiceFallback(context:Context):VoiceEngine{
- private var ready=false;private var selected:Voice?=null;private var tts:TextToSpeech?=null
- init{tts=TextToSpeech(context){s->val e=tts;if(s==TextToSpeech.SUCCESS&&e!=null){e.language=Locale.forLanguageTag("sr-RS");selected=e.voices.orEmpty().filter{it.locale.language=="sr"}.maxByOrNull{it.quality};selected?.let{e.voice=it};ready=true}}}
- override fun speak(text:String,onResult:(VoiceResult)->Unit){val n=SerbianSpeechNormalizer.normalize(text);if(!ready){onResult(VoiceResult("BLOCKED","ANDROID_SYSTEM_TTS","system",selected?.name?:"unavailable","sr-RS","LOCAL_FALLBACK","ANDROID_SYSTEM_TTS",0,n,"Fallback unavailable"));return};tts?.speak(n,TextToSpeech.QUEUE_FLUSH,null,"bato-fallback");onResult(VoiceResult("AUDIO_PLAYING","ANDROID_SYSTEM_TTS","system",selected?.name?:"default","sr-RS","LOCAL_FALLBACK","ANDROID_SYSTEM_TTS",0,n,"VOICE_FALLBACK=ANDROID_SYSTEM_TTS; broadcaster requirement NOT proven"))}
- override fun shutdown(){tts?.shutdown()};override fun identity()="VOICE_FALLBACK=ANDROID_SYSTEM_TTS"
+
+class AndroidSystemVoiceFallback(context: Context) : VoiceEngine {
+    private var ready = false; private var selected: Voice? = null; private var tts: TextToSpeech? = null
+    init { tts = TextToSpeech(context) { status -> tts?.let { engine -> if (status == TextToSpeech.SUCCESS) { engine.language = Locale.forLanguageTag("sr-RS"); selected = engine.voices.orEmpty().filter { it.locale.language == "sr" }.maxByOrNull { it.quality }; selected?.let { engine.voice = it }; ready = true } } } }
+    override fun speak(text: String, onResult: (VoiceResult) -> Unit) {
+        val n = SerbianSpeechNormalizer.normalize(text)
+        if (!ready) { onResult(VoiceResult("BLOCKED", "ANDROID_SYSTEM_TTS", "system", selected?.name ?: "unavailable", "sr-RS", "LOCAL_FALLBACK", "ANDROID_SYSTEM_TTS", 0, n, "Fallback unavailable")); return }
+        tts?.speak(n, TextToSpeech.QUEUE_FLUSH, null, "bato-fallback")
+        onResult(VoiceResult("QA_FAILED_FALLBACK", "ANDROID_SYSTEM_TTS", "system", selected?.name ?: "default", "sr-RS", "LOCAL_FALLBACK", "ANDROID_SYSTEM_TTS", 0, n, "VOICE_FALLBACK=ANDROID_SYSTEM_TTS; broadcaster requirement NOT proven"))
+    }
+    override fun shutdown() { tts?.shutdown() }
+    override fun identity() = "VOICE_FALLBACK=ANDROID_SYSTEM_TTS;QA_FAILED"
 }
-object SerbianVoiceCorpus{val samples=listOf("Добар дан. Настављамо тамо где смо стали.","Римско царство није једноставно нестало 476. године.","Становници Константинопоља себе су називали Ромејима, односно Римљанима.","Драган разговара са Батом.").map{it to SerbianSpeechNormalizer.normalize(it)}}
+object SerbianVoiceCorpus {
+    val samples = listOf("Добар дан. Настављамо тамо где смо стали.", "Римско царство није једноставно нестало 476. године.", "Становници Константинопоља себе су називали Ромејима, односно Римљанима.", "Драган разговара са Батом.").map { it to SerbianSpeechNormalizer.normalize(it) }
+}

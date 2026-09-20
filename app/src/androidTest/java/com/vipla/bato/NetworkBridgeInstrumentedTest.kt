@@ -94,10 +94,32 @@ class NetworkBridgeInstrumentedTest {
   prove("U4_CONTRADICTION_RESOLVED",a4.text.contains("zapad",true)&&a4.text.contains("476")&&a4.text.contains("1453")&&a4.retrievalUsed,a4)
  }
 
+ @Test fun generalStenoGraphRiznicaContinuityAndInspectableBundle()=runBlocking {
+  val recent=listOf(
+   event(201,"USER","Za projekat Svetionik, moj izraz 'plava soba' znači rezervni laboratorijski čvor."),
+   event(202,"ASSISTANT","Razumem: plava soba u projektu Svetionik označava rezervni laboratorijski čvor."),
+   event(203,"USER","Sada kratko pričamo o vremenu."),
+   event(204,"ASSISTANT","U redu.")
+  )
+  val steno=listOf(item("STENO:SVETIONIK-201","LOCAL_STENO","Korisnikov izraz 'plava soba' u projektu Svetionik znači rezervni laboratorijski čvor.","SVETIONIK"))
+  val riznica=listOf(item("RIZNICA:SVETIONIK-7","RIZNICA","Rezervni laboratorijski čvor projekta Svetionik koristi kod LUMEN-909.","SVETIONIK"))
+  val graph=listOf(item("GRAPH:SVETIONIK","FAST_GRAPH","entity=SVETIONIK; alias=plava soba; relation=HAS_BACKUP_NODE:LAB_BACKUP; cluster=project:svetionik","SVETIONIK"))
+  val context=ProviderContext(recent,steno,riznica,graph,emptyList(),listOf("SVETIONIK"),"RESOLVED:SVETIONIK",emptyList(),true)
+  val answer=ask("A koji je njegov kod?",context)
+  prove("GENERAL_ANAPHORA_TEXT",answer.text.contains("LUMEN-909"),answer)
+  prove("GENERAL_STENO_ID","STENO:SVETIONIK-201" in answer.retrievedItemIds,answer)
+  prove("GENERAL_RIZNICA_ID","RIZNICA:SVETIONIK-7" in answer.retrievedItemIds,answer)
+  prove("GENERAL_GRAPH_RESOLUTION",answer.graphResolution=="RESOLVED:SVETIONIK",answer)
+  prove("GENERAL_CONTEXT_BUNDLE_IDS",listOf("STENO:SVETIONIK-201","RIZNICA:SVETIONIK-7","GRAPH:SVETIONIK").all{answer.contextBundle.contains(it)},answer)
+
+  val ambiguity=ask("Nastavi o čvoru.",ProviderContext(emptyList(),emptyList(),emptyList(),emptyList(),emptyList(),listOf("NETWORK_NODE","GRAPH_NODE"),"AMBIGUOUS:NETWORK_NODE|GRAPH_NODE",listOf("NETWORK_NODE","GRAPH_NODE")))
+  prove("GENERAL_TRUE_AMBIGUITY_ONE_QUESTION",ambiguity.text.count{it=='?'}==1,ambiguity)
+ }
+
  @Test fun unacceptedVoiceIsFailClosed(){
   val c=URL("https://bato-sigma.vercel.app/api/voice").openConnection() as HttpsURLConnection
   c.requestMethod="POST";c.connectTimeout=15_000;c.readTimeout=90_000;c.doOutput=true;c.setRequestProperty("Content-Type","application/json")
   c.outputStream.use{it.write("{\"text\":\"Добар дан. Настављамо тамо где смо стали.\"}".toByteArray())}
-  assertEquals("VOICE_MUST_REMAIN_BLOCKED_UNTIL_PHYSICAL_QA",503,c.responseCode);val error=c.errorStream.bufferedReader().use{it.readText()};assertTrue(error.contains("physical listening QA"));c.disconnect()
+  assertEquals("VOICE_MUST_REMAIN_BLOCKED_UNTIL_PROVIDER_IS_PROVISIONED",503,c.responseCode);val error=c.errorStream.bufferedReader().use{it.readText()};assertTrue(error.contains("not provisioned"));c.disconnect()
  }
 }

@@ -59,7 +59,7 @@ fun BatoApp(vm: MainViewModel = viewModel()) {
     val voiceEngine = remember { RemoteBatoVoiceEngine(context) }
     DisposableEffect(Unit) { onDispose { voiceEngine.shutdown() } }
     LaunchedEffect(lastAssistant) {
-        lastAssistant?.takeIf { ttsEnabled }?.let { text -> voiceEngine.speak(text) { r -> vm.recordVoiceState(r.status, "VOICE_PROVIDER=${r.provider}|VOICE_MODEL=${r.model}|VOICE_ID=${r.voiceId}|VOICE_LOCALE=${r.locale}|VOICE_PROVENANCE=${r.provenance}|VOICE_FALLBACK=${r.fallback}|TTS_HTTP_STATUS=${r.httpStatus}|${r.evidence}|NORMALIZED=${r.normalizedText}") } }
+        lastAssistant?.takeIf { ttsEnabled }?.let { text -> voiceEngine.speak(text) { r -> vm.recordVoiceState(r.status, "VOICE_PROVIDER=${r.provider}|VOICE_MODEL=${r.model}|VOICE_ID=${r.voiceId}|VOICE_LOCALE=${r.locale}|VOICE_PROVENANCE=${r.provenance}|VOICE_FALLBACK=${r.fallback}|TTS_HTTP_STATUS=${r.httpStatus}|AUDIO_FORMAT=${r.audioFormat}|BYTES_RECEIVED=${r.bytesReceived}|DECODE=${r.decode}|PLAYBACK=${r.playback}|${r.evidence}|NORMALIZED=${r.normalizedText}") } }
     }
 
     Scaffold(

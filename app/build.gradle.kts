@@ -12,8 +12,8 @@ android {
         applicationId = "com.vipla.bato"
         minSdk = 26
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.4.2-continuity-rc"
+        versionCode = 10
+        versionName = "0.4.3-voice-context-qa"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true }
