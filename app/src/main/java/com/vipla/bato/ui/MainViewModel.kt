@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
+    companion object { const val DEFAULT_ENDPOINT = "https://bato-sigma.vercel.app/api/bato" }
     private val repo = StenoRepository(AppDatabase.get(app).stenoDao())
     private val prefs = app.getSharedPreferences("bato_provider", Context.MODE_PRIVATE)
 
@@ -40,7 +41,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun endpoint(): String = prefs.getString("endpoint", "").orEmpty()
+    fun endpoint(): String = prefs.getString("endpoint", DEFAULT_ENDPOINT).orEmpty().ifBlank { DEFAULT_ENDPOINT }
     fun saveEndpoint(value: String) { prefs.edit().putString("endpoint", value.trim()).apply() }
 
     fun sendMessage(text: String, source: String = "TEXT") {
