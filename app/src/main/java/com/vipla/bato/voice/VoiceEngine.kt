@@ -1,42 +1,28 @@
 package com.vipla.bato.voice
-
 import android.content.Context
+import android.media.MediaPlayer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.Voice
+import java.io.File
+import java.net.URL
 import java.util.Locale
+import javax.net.ssl.HttpsURLConnection
 
-data class VoiceResult(val status:String,val engine:String,val normalizedText:String,val voiceName:String,val evidence:String)
-interface VoiceEngine { fun speak(text:String,onResult:(VoiceResult)->Unit={}); fun shutdown(); fun identity():String }
-
-object SerbianSpeechNormalizer {
-    private val abbreviations=mapOf("dr." to "doktor", "npr." to "na primer", "itd." to "i tako dalje", "tj." to "to jest", "AI" to "veštačka inteligencija", "VIPLA" to "Vipla", "BATO" to "Bato")
-    fun normalize(text:String):String {
-        var out=text.trim().replace(Regex("\\s+")," ")
-        abbreviations.forEach{(from,to)->out=out.replace(from,to,ignoreCase=false)}
-        out=out.replace(Regex("(\\d{4})-(\\d{2})-(\\d{2})")){m->"${m.groupValues[3]}. ${m.groupValues[2]}. ${m.groupValues[1]}. godine"}
-        return out.replace("/"," kroz ").replace("—",", ")
-    }
+data class VoiceResult(val status:String,val provider:String,val model:String,val voiceId:String,val locale:String,val provenance:String,val fallback:String,val httpStatus:Int,val normalizedText:String,val evidence:String)
+interface VoiceEngine { fun speak(text:String,onResult:(VoiceResult)->Unit={});fun shutdown();fun identity():String }
+object SerbianSpeechNormalizer{
+ private val abbr=mapOf("dr." to "doktor","npr." to "na primer","itd." to "i tako dalje","tj." to "to jest","AI" to "veštačka inteligencija","VIPLA" to "Vipla","BATO" to "Bato")
+ fun normalize(text:String):String{var out=text.trim().replace(Regex("\\s+")," ");abbr.forEach{(a,b)->out=out.replace(a,b)};out=out.replace(Regex("(\\d{4})-(\\d{2})-(\\d{2})")){m->"${m.groupValues[3]}. ${m.groupValues[2]}. ${m.groupValues[1]}. godine"};return out.replace("/"," kroz ").replace("—",", ")}
 }
-
-class AndroidSerbianVoiceEngine(context:Context):VoiceEngine {
-    private var ready=false; private var selected:Voice?=null; private var tts:TextToSpeech?=null
-    init { tts=TextToSpeech(context){status-> val engine=tts; if(status==TextToSpeech.SUCCESS&&engine!=null){ engine.language=Locale.forLanguageTag("sr-RS"); selected=selectVoice(engine.voices); selected?.let{engine.voice=it}; engine.setSpeechRate(.92f); engine.setPitch(.86f); ready=true } } }
-    private fun selectVoice(voices:Set<Voice>?):Voice?=voices.orEmpty().filter{it.locale.language=="sr"}.sortedByDescending{v->(if(v.name.contains("male",true))100 else 0)+(if(!v.isNetworkConnectionRequired)10 else 0)+v.quality}.firstOrNull()
-    override fun speak(text:String,onResult:(VoiceResult)->Unit){val normalized=SerbianSpeechNormalizer.normalize(text); if(!ready){onResult(VoiceResult("BLOCKED","ANDROID_TTS",normalized,"UNAVAILABLE","Serbian voice engine not initialized; no audio claimed"));return}; tts?.speak(normalized,TextToSpeech.QUEUE_FLUSH,null,"bato-response");onResult(VoiceResult("AUDIO_REQUESTED","ANDROID_TTS_ADAPTER",normalized,selected?.name?:"DEFAULT_SR","Provider-neutral adapter active; male/broadcaster quality requires physical listening QA"))}
-    override fun shutdown(){tts?.shutdown()}; override fun identity()="BATO_SERBIAN_VOICE/ANDROID_ADAPTER/${selected?.name?:"INITIALIZING"}"
+class RemoteBatoVoiceEngine(private val context:Context,private val endpoint:String="https://bato-sigma.vercel.app/api/voice",private val fallback:VoiceEngine=AndroidSystemVoiceFallback(context)):VoiceEngine{
+ @Volatile private var player:MediaPlayer?=null
+ override fun speak(text:String,onResult:(VoiceResult)->Unit){val n=SerbianSpeechNormalizer.normalize(text);Thread{try{val c=URL(endpoint).openConnection() as HttpsURLConnection;c.requestMethod="POST";c.connectTimeout=15_000;c.readTimeout=90_000;c.doOutput=true;c.setRequestProperty("Content-Type","application/json");val escaped=n.replace("\\","\\\\").replace("\"","\\\"").replace("\n","\\n");c.outputStream.use{it.write("{\"text\":\"$escaped\"}".toByteArray())};val status=c.responseCode;if(status !in 200..299)throw IllegalStateException("TTS_HTTP_STATUS=$status ${(c.errorStream?.bufferedReader()?.readText()).orEmpty().take(240)}");val audio=File.createTempFile("bato-voice-",".mp3",context.cacheDir);c.inputStream.use{i->audio.outputStream().use{i.copyTo(it)}};val r=VoiceResult("AUDIO_PLAYING",c.getHeaderField("X-Bato-Voice-Provider")?:"vercel-ai-gateway/openai",c.getHeaderField("X-Bato-Voice-Model")?:"openai/tts-1-hd",c.getHeaderField("X-Bato-Voice-Id")?:"onyx",c.getHeaderField("X-Bato-Voice-Locale")?:"sr-RS",c.getHeaderField("X-Bato-Voice-Provenance")?:"PROVIDER_REAL","NONE",status,n,"Remote neural audio received; physical listening QA required");c.disconnect();val mp=MediaPlayer();player?.release();player=mp;mp.setDataSource(audio.absolutePath);mp.setOnCompletionListener{it.release();audio.delete();player=null};mp.setOnErrorListener{p,_,_->p.release();audio.delete();player=null;true};mp.prepare();mp.start();onResult(r)}catch(e:Exception){fallback.speak(n){r->onResult(r.copy(evidence="REMOTE_BLOCKED=${e.message}; ${r.evidence}"))}}}.start()}
+ override fun shutdown(){player?.release();player=null;fallback.shutdown()};override fun identity()="BATO_REMOTE_VOICE/openai-tts-1-hd/onyx/sr-RS"
 }
-
-object SerbianVoiceCorpus {
-    val samples=listOf(
-        "Добар дан. Настављамо тамо где смо стали.",
-        "Разговарамо о Римском царству, његовом успону и паду Западног римског царства.",
-        "Драган разговара са Звезданом о Бату и Випли.",
-        "Јуче сам радио, данас радим, а сутра ћу наставити.",
-        "У Београду, из Београда, ка Београду, са Београдом.",
-        "Датум је 20. 9. 2026. године, а време је 14 часова и 35 минута.",
-        "На пример, доктор Петровић користи вештачку интелигенцију.",
-        "Да ли желиш да наставимо? Одлично — почнимо.",
-        "OpenAI и Android имају српске изговорне облике када су познати.",
-        "лук, лук; град, град — акценат и контекст мењају значење."
-    ).map{it to SerbianSpeechNormalizer.normalize(it)}
+class AndroidSystemVoiceFallback(context:Context):VoiceEngine{
+ private var ready=false;private var selected:Voice?=null;private var tts:TextToSpeech?=null
+ init{tts=TextToSpeech(context){s->val e=tts;if(s==TextToSpeech.SUCCESS&&e!=null){e.language=Locale.forLanguageTag("sr-RS");selected=e.voices.orEmpty().filter{it.locale.language=="sr"}.maxByOrNull{it.quality};selected?.let{e.voice=it};ready=true}}}
+ override fun speak(text:String,onResult:(VoiceResult)->Unit){val n=SerbianSpeechNormalizer.normalize(text);if(!ready){onResult(VoiceResult("BLOCKED","ANDROID_SYSTEM_TTS","system",selected?.name?:"unavailable","sr-RS","LOCAL_FALLBACK","ANDROID_SYSTEM_TTS",0,n,"Fallback unavailable"));return};tts?.speak(n,TextToSpeech.QUEUE_FLUSH,null,"bato-fallback");onResult(VoiceResult("AUDIO_PLAYING","ANDROID_SYSTEM_TTS","system",selected?.name?:"default","sr-RS","LOCAL_FALLBACK","ANDROID_SYSTEM_TTS",0,n,"VOICE_FALLBACK=ANDROID_SYSTEM_TTS; broadcaster requirement NOT proven"))}
+ override fun shutdown(){tts?.shutdown()};override fun identity()="VOICE_FALLBACK=ANDROID_SYSTEM_TTS"
 }
+object SerbianVoiceCorpus{val samples=listOf("Добар дан. Настављамо тамо где смо стали.","Римско царство није једноставно нестало 476. године.","Становници Константинопоља себе су називали Ромејима, односно Римљанима.","Драган разговара са Батом.").map{it to SerbianSpeechNormalizer.normalize(it)}}
