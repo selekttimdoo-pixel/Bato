@@ -7,7 +7,7 @@ function timezone(value){try{const z=typeof value==="string"&&value.length<100?v
 function clock(z){const now=new Date();const p=new Intl.DateTimeFormat("en-CA",{timeZone:z,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}).formatToParts(now).reduce((a,x)=>({...a,[x.type]:x.value}),{});return{CURRENT_DATETIME:`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}[${z}]`,CURRENT_DATE:`${p.year}-${p.month}-${p.day}`,CURRENT_TIME:`${p.hour}:${p.minute}:${p.second}`,TIMEZONE:z}}
 function recent(value){return(Array.isArray(value)?value:[]).slice(-MAX.recent).flatMap(x=>x&&typeof x.content==="string"?[{role:x.role==="assistant"?"assistant":"user",content:x.content.slice(0,MAX.chars),timestamp_ms:x.timestamp_ms??null,provenance:String(x.provenance||"UNREPORTED"),source_id:String(x.source_id||"UNREPORTED")}]:[])}
 function items(value,limit){return(Array.isArray(value)?value:[]).slice(0,limit).flatMap(x=>{const text=x?.canonical_text??x?.content;if(typeof text!=="string"||!x?.source_id)return[];return[{source_type:String(x.source_type||"UNKNOWN"),source_id:String(x.source_id),timestamp_ms:x.timestamp_ms??null,canonical_text:text.slice(0,MAX.chars),confidence:Number(x.confidence)||0,provenance:String(x.provenance||"UNREPORTED"),entity_id:x.entity_id||null,cluster_id:x.cluster_id||null,domain:x.domain||null}]}).sort((a,b)=>b.confidence-a.confidence)}
-function attachedIds(bundle){return[...bundle.STENO_RETRIEVAL,...bundle.RIZNICA_RETRIEVAL,...bundle.FAST_GRAPH_CONTEXT,...bundle.LEXICAL_GRAMMAR_CONTEXT].map(x=>x.source_id)}
+function attachedIds(bundle){return[...bundle.RECENT_CONVERSATION,...bundle.STENO_RETRIEVAL,...bundle.RIZNICA_RETRIEVAL,...bundle.FAST_GRAPH_CONTEXT,...bundle.LEXICAL_GRAMMAR_CONTEXT].map(x=>x.source_id).filter(x=>x&&x!=="UNREPORTED")}
 function evidenceOverlap(answer,item){const stop=new Set(["kroz","koji","koja","koje","biti","smo","sam","nije","jedan","jednog","na","u","i","je","se","da","za","od","o","a"]);const tok=s=>new Set(String(s).toLocaleLowerCase("sr").match(/[\p{L}\p{N}-]{3,}/gu)?.filter(x=>!stop.has(x))||[]);const a=tok(answer),b=tok(item.canonical_text);if(!b.size)return 0;let hit=0;b.forEach(x=>{if(a.has(x))hit++});return hit/b.size}
 
 
@@ -53,14 +53,16 @@ export default async function handler(req,res){
    if(audit.ok){const auditData=await audit.json();const auditContent=auditData?.choices?.[0]?.message?.content;try{const checked=JSON.parse(auditContent);if(typeof checked.answer==="string"&&checked.answer.trim()){grounded=checked;declared=Array.isArray(checked.used_item_ids)?checked.used_item_ids.filter(id=>ids.includes(id)):[]}}catch{}}
   }
   if(declared.length===0){
-   const all=[...bundle.STENO_RETRIEVAL,...bundle.RIZNICA_RETRIEVAL,...bundle.FAST_GRAPH_CONTEXT,...bundle.LEXICAL_GRAMMAR_CONTEXT];
+   const recentEvidence=bundle.RECENT_CONVERSATION.map(x=>({source_id:x.source_id,canonical_text:x.content}));
+   const all=[...recentEvidence,...bundle.STENO_RETRIEVAL,...bundle.RIZNICA_RETRIEVAL,...bundle.FAST_GRAPH_CONTEXT,...bundle.LEXICAL_GRAMMAR_CONTEXT];
    declared=all.filter(x=>evidenceOverlap(grounded.answer,x)>=0.45).map(x=>x.source_id);
    if(declared.length)grounded.grounding_summary=`SERVER_VALIDATED_TEXTUAL_GROUNDING: ${declared.join(",")}; ${String(grounded.grounding_summary||"")}`;
   }
   if(bundle.RETRIEVAL_REQUIRED&&declared.length===0)return res.status(502).json({error:"RETRIEVAL_ASSERTION_FAILED",detail:"Relevant STENO/FAST GRAPH/Riznica context was attached but did not materially control the answer",provenance:"BLOCKED",retrieval_used:false,retrieved_item_ids:[]});
   if(typeof grounded.answer!=="string"||!grounded.answer.trim())return res.status(502).json({error:"Provider returned no answer; no answer fabricated",provenance:"BLOCKED"});
   const used=[...new Set(declared)];
-  const sources=[...new Set(used.map(id=>id.split(":")[0]==="GRAPH"?"FAST_GRAPH_CONTEXT":id.split(":")[0]==="STENO"?"STENO_RETRIEVAL":id.split(":")[0]==="RIZNICA"?"RIZNICA_RETRIEVAL":"LEXICAL_GRAMMAR_CONTEXT"))];
+  const recentIds=new Set(bundle.RECENT_CONVERSATION.map(x=>x.source_id));
+  const sources=[...new Set(used.map(id=>recentIds.has(id)?"RECENT_CONVERSATION":id.split(":")[0]==="GRAPH"?"FAST_GRAPH_CONTEXT":id.split(":")[0]==="STENO"?"STENO_RETRIEVAL":id.split(":")[0]==="RIZNICA"?"RIZNICA_RETRIEVAL":"LEXICAL_GRAMMAR_CONTEXT"))];
   return res.status(200).json({response:grounded.answer.trim(),provenance:"PROVIDER_REAL",local_fallback:false,imported:false,http_status:200,provider:"vercel-ai-gateway",provider_model:data.model||MODEL,retrieval_used:used.length>0,retrieval_sources:sources,retrieved_item_ids:used,fast_graph_resolution:bundle.FAST_GRAPH_RESOLUTION,current_datetime_used:grounded.current_datetime_used===true,grounding_summary:String(grounded.grounding_summary||""),context_bundle:bundle});
  }catch(error){return res.status(502).json({error:"Provider request failed",detail:String(error?.message||error),provenance:"BLOCKED",http_status:502})}
 }

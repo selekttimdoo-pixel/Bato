@@ -24,7 +24,10 @@ class NetworkBridgeInstrumentedTest {
  private fun empty()=ProviderContext(emptyList(),emptyList(),emptyList(),emptyList(),emptyList(),emptyList(),"UNRESOLVED",emptyList(),false)
  private fun event(id:Long,role:String,text:String)=StenoEvent(id,role,text,System.currentTimeMillis(),System.currentTimeMillis(),UUID.randomUUID().toString(),UUID.randomUUID().toString(),"STENO_FIRST:TEST")
  private fun item(id:String,type:String,text:String,entity:String?=null)=RetrievedItem(id,type,System.currentTimeMillis(),text,.98,"TEST_EXACT",entity,"test:continuity","test")
- private suspend fun ask(message:String,context:ProviderContext)=HttpProviderBridge(endpoint).respond(message,context) as ProviderResult.Response
+ private suspend fun ask(message:String,context:ProviderContext):ProviderResult.Response = when(val result=HttpProviderBridge(endpoint).respond(message,context)){
+  is ProviderResult.Response -> result
+  is ProviderResult.Blocked -> throw AssertionError("LIVE_PROVIDER_BLOCKED for '$message': ${result.reason}")
+ }
  private fun prove(name:String,ok:Boolean,result:ProviderResult.Response){
   if(!ok) throw AssertionError("$name | text=${result.text} | ids=${result.retrievedItemIds} | datetime=${result.currentDatetimeUsed} | graph=${result.graphResolution}")
  }
