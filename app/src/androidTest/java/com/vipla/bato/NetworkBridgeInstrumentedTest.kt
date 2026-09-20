@@ -107,8 +107,8 @@ class NetworkBridgeInstrumentedTest {
   val context=ProviderContext(recent,steno,riznica,graph,emptyList(),listOf("SVETIONIK"),"RESOLVED:SVETIONIK",emptyList(),true)
   val answer=ask("A koji je njegov kod?",context)
   prove("GENERAL_ANAPHORA_TEXT",answer.text.contains("LUMEN-909"),answer)
-  prove("GENERAL_STENO_ID","STENO:SVETIONIK-201" in answer.retrievedItemIds,answer)
-  prove("GENERAL_RIZNICA_ID","RIZNICA:SVETIONIK-7" in answer.retrievedItemIds,answer)
+  prove("GENERAL_MATERIAL_RIZNICA_ID","RIZNICA:SVETIONIK-7" in answer.retrievedItemIds,answer)
+  prove("GENERAL_MATERIAL_SOURCE","RIZNICA_RETRIEVAL" in answer.retrievalSources,answer)
   prove("GENERAL_GRAPH_RESOLUTION",answer.graphResolution=="RESOLVED:SVETIONIK",answer)
   prove("GENERAL_CONTEXT_BUNDLE_IDS",listOf("STENO:SVETIONIK-201","RIZNICA:SVETIONIK-7","GRAPH:SVETIONIK").all{answer.contextBundle.contains(it)},answer)
 
