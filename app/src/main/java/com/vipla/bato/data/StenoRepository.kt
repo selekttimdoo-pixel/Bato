@@ -58,8 +58,8 @@ class StenoRepository(private val dao: StenoDao) {
     private fun score(text: String, queryTerms: Set<String>): Int {
         if (queryTerms.isEmpty()) return 0
         val candidate = terms(text)
-        return queryTerms.sumOf { term ->
-            when {
+        return queryTerms.fold(0) { total, term ->
+            total + when {
                 term in candidate -> if (term.any(Char::isDigit) || term.contains('-')) 6 else 2
                 candidate.any { it.contains(term) || term.contains(it) } -> 1
                 else -> 0
