@@ -36,7 +36,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     init {
         viewModelScope.launch {
             repo.putKnowledge("steno-wal", "STENO WAL", "Durable local raw event log committed before every remote provider request")
-            repo.putKnowledge("fast-graph", "FAST GRAPH", "Entity/relation retrieval hook consumes persisted STENO context; live remote graph remains unproven")
+            repo.putKnowledge("entity:roman_empire", "FAST GRAPH", "entity=Roman Empire; aliases=Rimsko carstvo|Rim|Roman Empire; cluster=history:roman; domain=history; relation=HAS_PHASE:Western Roman Empire; provenance=BUILTIN_SEED")
+            repo.putKnowledge("entity:western_roman_empire", "FAST GRAPH", "entity=Western Roman Empire; aliases=Zapadno rimsko carstvo|Zapadni Rim; cluster=history:roman; domain=history; relation=PART_OF:Roman Empire; provenance=BUILTIN_SEED")
+            repo.putKnowledge("entity:vipla_bato", "FAST GRAPH", "entity=VIPLA/BATO; aliases=VIPLA|BATO|Cockpit; cluster=project:bato; domain=project; relation=USES:STENO,Riznica,FAST GRAPH; provenance=BUILTIN_SEED")
             repo.putKnowledge("riznica", "Riznica", "Local Room knowledge-object vault used by Vault and Search")
             repo.putKnowledge("serbian-lexicon", "Active Serbian Lexicon", "Serbian recognition locale and lexical provider hook; external corpus remains unproven")
             repo.putKnowledge("serbian-grammar", "Serbian Grammar Graph", "Grammar-layer provider hook with Serbian speech locale; external graph remains unproven")
@@ -64,11 +66,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             val recent = repo.context(13).filter { it.id != userEvent.id && it.role in setOf("USER", "ASSISTANT") }.takeLast(12)
             val retrieval = repo.retrieve(text.trim(), userEvent.id)
-            val providerContext = ProviderContext(recent, retrieval.steno, retrieval.riznica, retrieval.fastGraph)
+            val providerContext = ProviderContext(recent, retrieval.steno, retrieval.riznica, retrieval.fastGraph, retrieval.lexicalGrammar, retrieval.resolvedEntities, retrieval.graphResolution, retrieval.ambiguityCandidates)
             when (val result = HttpProviderBridge(endpoint()).respond(text.trim(), providerContext)) {
                 is ProviderResult.Response -> {
                     val sources = result.retrievalSources.joinToString(",").ifBlank { "NONE" }
-                    val state = "${result.provenance}|LOCAL_FALLBACK=false|IMPORTED=false|RETRIEVAL_USED=${result.retrievalUsed}|RETRIEVAL_SOURCES=$sources|HTTP_STATUS=${result.httpStatus}|PROVIDER_MODEL=${result.model}"
+                    val ids = result.retrievedItemIds.joinToString(",").ifBlank { "NONE" }
+                    val state = "${result.provenance}|LOCAL_FALLBACK=false|IMPORTED=false|RETRIEVAL_USED=${result.retrievalUsed}|RETRIEVAL_SOURCES=$sources|RETRIEVED_ITEM_IDS=$ids|FAST_GRAPH_RESOLUTION=${result.graphResolution}|CURRENT_DATETIME_USED=${result.currentDatetimeUsed}|HTTP_STATUS=${result.httpStatus}|PROVIDER_MODEL=${result.model}"
+                    repo.putRuntime("LAST_CONTEXT_BUNDLE", result.contextBundle.ifBlank { "Backend returned no inspectable context bundle" })
                     repo.append("ASSISTANT", result.text, state)
                     repo.log(null, "PROVIDER", "PASS", "Assistant response persisted to STENO; $state")
                     _lastAssistant.value = result.text
@@ -137,4 +141,5 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun recordMicState(state: String, evidence: String) = viewModelScope.launch { repo.log(null, "MIC", state, evidence) }
+    fun recordVoiceState(state: String, evidence: String) = viewModelScope.launch { repo.log(null, "VOICE", state, evidence) }
 }
