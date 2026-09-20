@@ -7,6 +7,8 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.vipla.bato.ai.*
 import com.vipla.bato.data.RetrievedItem
 import com.vipla.bato.data.StenoEvent
+import com.vipla.bato.data.AppDatabase
+import com.vipla.bato.data.StenoRepository
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Test
@@ -19,12 +21,31 @@ import javax.net.ssl.HttpsURLConnection
 @RunWith(AndroidJUnit4::class)
 class NetworkBridgeInstrumentedTest {
  private val endpoint="https://bato-sigma.vercel.app/api/bato"
- private fun empty()=ProviderContext(emptyList(),emptyList(),emptyList(),emptyList(),emptyList(),emptyList(),"UNRESOLVED",emptyList())
+ private fun empty()=ProviderContext(emptyList(),emptyList(),emptyList(),emptyList(),emptyList(),emptyList(),"UNRESOLVED",emptyList(),false)
  private fun event(id:Long,role:String,text:String)=StenoEvent(id,role,text,System.currentTimeMillis(),System.currentTimeMillis(),UUID.randomUUID().toString(),UUID.randomUUID().toString(),"STENO_FIRST:TEST")
  private fun item(id:String,type:String,text:String,entity:String?=null)=RetrievedItem(id,type,System.currentTimeMillis(),text,.98,"TEST_EXACT",entity,"test:continuity","test")
  private suspend fun ask(message:String,context:ProviderContext)=HttpProviderBridge(endpoint).respond(message,context) as ProviderResult.Response
  private fun prove(name:String,ok:Boolean,result:ProviderResult.Response){
   if(!ok) throw AssertionError("$name | text=${result.text} | ids=${result.retrievedItemIds} | datetime=${result.currentDatetimeUsed} | graph=${result.graphResolution}")
+ }
+
+ @Test fun localResolverCarriesRomanEntityAcrossPronouns()=runBlocking {
+  val app=InstrumentationRegistry.getInstrumentation().targetContext
+  val repo=StenoRepository(AppDatabase.get(app).stenoDao())
+  repo.putKnowledge("entity:roman_empire","FAST GRAPH","entity=ROMAN_EMPIRE; aliases=Rimsko carstvo|Rim; cluster=history:roman; domain=history; relation=HAS_WESTERN_GOVERNMENT:WESTERN_ROMAN_EMPIRE; relation=CONTINUATION:EASTERN_ROMAN_EMPIRE")
+  repo.putKnowledge("entity:western_roman_empire","FAST GRAPH","entity=WESTERN_ROMAN_EMPIRE; aliases=Zapadno rimsko carstvo; cluster=history:roman; domain=history; conventional_end=476; relation=PART_OF:ROMAN_EMPIRE")
+  val u1=repo.append("USER","Bato, kada je palo Rimsko carstvo?","STENO_FIRST:TEST")
+  repo.append("ASSISTANT","Pitanje se odnosi na Rimsko carstvo kao celinu, ne samo na zapadnu carsku vlast.","PROVIDER_REAL")
+  repo.append("USER","Šta sam te ja pitao?","STENO_FIRST:TEST")
+  repo.append("ASSISTANT","Pitao si kada je palo Rimsko carstvo.","PROVIDER_REAL")
+  val u3=repo.append("USER","Onda me očigledno to zanima.","STENO_FIRST:TEST")
+  val recent=repo.context(8).filter{it.id!=u3.id}.takeLast(8)
+  val result=repo.retrieve(u3.rawText,u3.id,recent)
+  assertEquals("RESOLVED:ROMAN_EMPIRE",result.graphResolution)
+  assertTrue("STENO must be retrieved for anaphoric follow-up",result.steno.any{it.id=="STENO:${u1.id}"})
+  assertTrue("FAST GRAPH Roman entity must be attached",result.fastGraph.any{it.entityId.equals("roman_empire",true) || it.canonicalText.contains("ROMAN_EMPIRE")})
+  assertTrue("Relevant context must trigger hard retrieval assertion",result.retrievalRequired)
+  assertTrue("Context must suppress generic ambiguity",result.ambiguityCandidates.isEmpty())
  }
 
  @Test fun liveGroundedContinuitySuite()=runBlocking {
@@ -59,22 +80,21 @@ class NetworkBridgeInstrumentedTest {
    item("GRAPH:ROMAN","FAST_GRAPH","ROMAN_EMPIRE NOT_SYNONYM_OF WESTERN_ROMAN_EMPIRE; HAS_CONTINUATION EASTERN_ROMAN_EMPIRE","ROMAN_EMPIRE"),
    item("GRAPH:EAST","FAST_GRAPH","EASTERN_ROMAN_EMPIRE CONTINUATION_OF ROMAN_EMPIRE; end=1453; self_identity=Romans|Rhomaioi|Romeji; later_label=BYZANTINE_EMPIRE","EASTERN_ROMAN_EMPIRE")
   )
-  val c1=ProviderContext(emptyList(),emptyList(),romanFacts,graph,emptyList(),listOf("ROMAN_EMPIRE","WESTERN_ROMAN_EMPIRE","EASTERN_ROMAN_EMPIRE"),"RESOLVED:ROMAN_EMPIRE",emptyList())
-  val a1=ask("Kada je palo Rimsko carstvo?",c1)
-  prove("ROMAN_476_1453",a1.text.contains("476")&&a1.text.contains("1453"),a1)
-  val recent2=listOf(event(101,"USER","Kada je palo Rimsko carstvo?"),event(102,"ASSISTANT",a1.text))
-  val a2=ask("Kako je onda palo ako je nastavilo da postoji?",c1.copy(recentConversation=recent2))
-  prove("ROMAN_WESTERN_GOVERNMENT",a2.text.contains("zapad",true)&&a2.text.contains("476"),a2)
-  val recent3=recent2+event(103,"USER","Kako je onda palo ako je nastavilo da postoji?")+event(104,"ASSISTANT",a2.text)
-  val a3=ask("Kako su sebe zvali ljudi u Carigradu 1100. godine?",c1.copy(recentConversation=recent3))
-  prove("ROMAN_SELF_IDENTITY",(a3.text.contains("Romej",true)||a3.text.contains("Rhoma",true)||a3.text.contains("Rimljan",true))&&!a3.text.contains("sebe Vizant",true),a3)
+  val c1=ProviderContext(emptyList(),emptyList(),romanFacts,graph,emptyList(),listOf("ROMAN_EMPIRE"),"RESOLVED:ROMAN_EMPIRE",emptyList(),true)
+  val u1="Bato, kada je palo Rimsko carstvo?"; val a1=ask(u1,c1)
+  prove("U1_ENTITY_NOT_SUBSTITUTED",a1.text.contains("476")&&a1.text.contains("1453")&&a1.retrievalUsed,a1)
+  val h2=listOf(event(101,"USER",u1),event(102,"ASSISTANT",a1.text)); val a2=ask("Šta sam te ja pitao?",c1.copy(recentConversation=h2))
+  prove("U2_EXACT_SEMANTIC_RECALL",a2.text.contains("Rimsk",true)&&a2.text.contains("pitao",true)&&a2.retrievalUsed,a2)
+  val h3=h2+event(103,"USER","Šta sam te ja pitao?")+event(104,"ASSISTANT",a2.text); val a3=ask("Onda me očigledno to zanima.",c1.copy(recentConversation=h3))
+  prove("U3_ANAPHORA_NO_RESET",!a3.text.contains("da li misliš",true)&&!a3.text.trim().endsWith("?")&&a3.text.contains("Rimsk",true)&&a3.retrievalUsed,a3)
+  val h4=h3+event(105,"USER","Onda me očigledno to zanima.")+event(106,"ASSISTANT",a3.text); val a4=ask("Kako je onda palo ako je nastavilo da postoji?",c1.copy(recentConversation=h4))
+  prove("U4_CONTRADICTION_RESOLVED",a4.text.contains("zapad",true)&&a4.text.contains("476")&&a4.text.contains("1453")&&a4.retrievalUsed,a4)
  }
 
- @Test fun remoteVoiceProviderReturnsRealAudio(){
+ @Test fun unacceptedVoiceIsFailClosed(){
   val c=URL("https://bato-sigma.vercel.app/api/voice").openConnection() as HttpsURLConnection
   c.requestMethod="POST";c.connectTimeout=15_000;c.readTimeout=90_000;c.doOutput=true;c.setRequestProperty("Content-Type","application/json")
   c.outputStream.use{it.write("{\"text\":\"Добар дан. Настављамо тамо где смо стали.\"}".toByteArray())}
-  assertEquals("VOICE_HTTP",200,c.responseCode);val bytes=c.inputStream.use{it.readBytes()};assertTrue("VOICE_AUDIO_SIZE=${bytes.size}",bytes.size>1000)
-  assertEquals("PROVIDER_REAL",c.getHeaderField("X-Bato-Voice-Provenance"));assertEquals("onyx",c.getHeaderField("X-Bato-Voice-Id"));assertEquals("sr-RS",c.getHeaderField("X-Bato-Voice-Locale"));c.disconnect()
+  assertEquals("VOICE_MUST_REMAIN_BLOCKED_UNTIL_PHYSICAL_QA",503,c.responseCode);val error=c.errorStream.bufferedReader().use{it.readText()};assertTrue(error.contains("physical listening QA"));c.disconnect()
  }
 }
