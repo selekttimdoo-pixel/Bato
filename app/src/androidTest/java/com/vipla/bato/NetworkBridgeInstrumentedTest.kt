@@ -13,6 +13,8 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import java.time.LocalDate
 import java.util.UUID
+import java.net.URL
+import javax.net.ssl.HttpsURLConnection
 
 @RunWith(AndroidJUnit4::class)
 class NetworkBridgeInstrumentedTest {
@@ -46,5 +48,33 @@ class NetworkBridgeInstrumentedTest {
 
   val ambiguity=ask("Nastavi priču o Aleksandru.",ProviderContext(emptyList(),emptyList(),emptyList(),emptyList(),emptyList(),listOf("ALEXANDAR_PERSON","ALEXANDER_EMPEROR"),"AMBIGUOUS:ALEXANDAR_PERSON|ALEXANDER_EMPEROR",listOf("ALEXANDAR_PERSON","ALEXANDER_EMPEROR")))
   prove("AMBIGUITY_QUESTION",ambiguity.text.contains("?"),ambiguity)
+ }
+
+ @Test fun romanIdentityContinuitySuite()=runBlocking {
+  val romanFacts=listOf(
+   item("RIZNICA:ROMAN-1","RIZNICA","Zapadna carska vlast okončana je 476, ali je Istočno rimsko carstvo sa sedištem u Konstantinopolju nastavilo do 1453.","ROMAN_EMPIRE"),
+   item("RIZNICA:ROMAN-2","RIZNICA","Stanovnici carstva u Konstantinopolju sebe su nazivali Rimljanima, odnosno Rhomaioi/Romejima; Vizantijsko carstvo je kasniji istoriografski naziv.","EASTERN_ROMAN_EMPIRE")
+  )
+  val graph=listOf(
+   item("GRAPH:ROMAN","FAST_GRAPH","ROMAN_EMPIRE NOT_SYNONYM_OF WESTERN_ROMAN_EMPIRE; HAS_CONTINUATION EASTERN_ROMAN_EMPIRE","ROMAN_EMPIRE"),
+   item("GRAPH:EAST","FAST_GRAPH","EASTERN_ROMAN_EMPIRE CONTINUATION_OF ROMAN_EMPIRE; end=1453; self_identity=Romans|Rhomaioi|Romeji; later_label=BYZANTINE_EMPIRE","EASTERN_ROMAN_EMPIRE")
+  )
+  val c1=ProviderContext(emptyList(),emptyList(),romanFacts,graph,emptyList(),listOf("ROMAN_EMPIRE","WESTERN_ROMAN_EMPIRE","EASTERN_ROMAN_EMPIRE"),"RESOLVED:ROMAN_EMPIRE",emptyList())
+  val a1=ask("Kada je palo Rimsko carstvo?",c1)
+  prove("ROMAN_476_1453",a1.text.contains("476")&&a1.text.contains("1453"),a1)
+  val recent2=listOf(event(101,"USER","Kada je palo Rimsko carstvo?"),event(102,"ASSISTANT",a1.text))
+  val a2=ask("Kako je onda palo ako je nastavilo da postoji?",c1.copy(recentConversation=recent2))
+  prove("ROMAN_WESTERN_GOVERNMENT",a2.text.contains("zapad",true)&&a2.text.contains("476"),a2)
+  val recent3=recent2+event(103,"USER","Kako je onda palo ako je nastavilo da postoji?")+event(104,"ASSISTANT",a2.text)
+  val a3=ask("Kako su sebe zvali ljudi u Carigradu 1100. godine?",c1.copy(recentConversation=recent3))
+  prove("ROMAN_SELF_IDENTITY",(a3.text.contains("Romej",true)||a3.text.contains("Rhoma",true)||a3.text.contains("Rimljan",true))&&!a3.text.contains("sebe Vizant",true),a3)
+ }
+
+ @Test fun remoteVoiceProviderReturnsRealAudio(){
+  val c=URL("https://bato-sigma.vercel.app/api/voice").openConnection() as HttpsURLConnection
+  c.requestMethod="POST";c.connectTimeout=15_000;c.readTimeout=90_000;c.doOutput=true;c.setRequestProperty("Content-Type","application/json")
+  c.outputStream.use{it.write("{\"text\":\"Добар дан. Настављамо тамо где смо стали.\"}".toByteArray())}
+  assertEquals("VOICE_HTTP",200,c.responseCode);val bytes=c.inputStream.use{it.readBytes()};assertTrue("VOICE_AUDIO_SIZE=${bytes.size}",bytes.size>1000)
+  assertEquals("PROVIDER_REAL",c.getHeaderField("X-Bato-Voice-Provenance"));assertEquals("onyx",c.getHeaderField("X-Bato-Voice-Id"));assertEquals("sr-RS",c.getHeaderField("X-Bato-Voice-Locale"));c.disconnect()
  }
 }
