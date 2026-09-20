@@ -34,6 +34,13 @@ export default async function handler(req,res){
   const raw=await upstream.text();if(!upstream.ok)return res.status(502).json({error:`Provider ${upstream.status}`,detail:raw.slice(0,700),provenance:"BLOCKED",http_status:502});
   const data=JSON.parse(raw);const content=data?.choices?.[0]?.message?.content;if(!content)return res.status(502).json({error:"Provider returned no content; no answer fabricated",provenance:"BLOCKED"});
   let grounded;try{grounded=JSON.parse(content)}catch{return res.status(502).json({error:"Provider violated grounded JSON contract",detail:content.slice(0,500),provenance:"BLOCKED"})}
+  if(bundle.AMBIGUITY_CANDIDATES.length>1&&!String(grounded.answer||"").includes("?")){
+   const ambiguityMessages=[...messages,{role:"assistant",content:JSON.stringify(grounded)},{role:"user",content:`AMBIGUITY GATE: You selected a candidate without evidence. Do not answer the topic. Return the JSON contract with one short Serbian disambiguation question ending in ?, asking which of these candidates the user means: ${JSON.stringify(bundle.AMBIGUITY_CANDIDATES)}. used_item_ids must be empty.`}];
+   const correction=await fetch(GATEWAY,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${token}`},body:JSON.stringify({model:MODEL,messages:ambiguityMessages,response_format:{type:"json_object"},temperature:0})});
+   if(!correction.ok)return res.status(502).json({error:"Ambiguity correction provider failed",provenance:"BLOCKED"});
+   const correctionData=await correction.json();try{grounded=JSON.parse(correctionData?.choices?.[0]?.message?.content||"")}catch{return res.status(502).json({error:"Provider violated ambiguity JSON contract",provenance:"BLOCKED"})}
+   if(typeof grounded.answer!=="string"||!grounded.answer.includes("?"))return res.status(502).json({error:"Provider failed ambiguity gate; no candidate was guessed",provenance:"BLOCKED"});
+  }
   let declared=Array.isArray(grounded.used_item_ids)?grounded.used_item_ids.filter(id=>ids.includes(id)):[];
   if(ids.length&&declared.length===0){
    const auditMessages=[...messages,{role:"assistant",content:JSON.stringify(grounded)},{role:"user",content:`GROUNDING AUDIT: The answer may paraphrase attached evidence. Return the same JSON contract. If any exact/canonical retrieved fact materially controlled the answer, list every corresponding source_id from this allowed set: ${JSON.stringify(ids)}. If none controlled it, keep used_item_ids empty and rewrite the answer so it does not imply retrieved-memory grounding.`}];
