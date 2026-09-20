@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -34,6 +34,18 @@ jobs:
         run: |
           test -s app/build/outputs/apk/debug/app-debug.apk
           unzip -t app/build/outputs/apk/debug/app-debug.apk
+          AAPT="$ANDROID_HOME/build-tools/35.0.0/aapt"
+          "$AAPT" dump permissions app/build/outputs/apk/debug/app-debug.apk | tee /tmp/apk-permissions.txt
+          grep -F "android.permission.INTERNET" /tmp/apk-permissions.txt
+          grep -F "android.permission.RECORD_AUDIO" /tmp/apk-permissions.txt
+
+      - name: Android emulator live bridge test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          profile: pixel_6
+          script: gradle --no-daemon --stacktrace :app:connectedDebugAndroidTest
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -42,3 +54,12 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish installable APK release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.3.3-context
+          name: VIPLA BATO Android v0.3.3-context
+          body: Provider context, authoritative server time, bounded STENO/Riznica retrieval, and response provenance.
+          files: app/build/outputs/apk/debug/app-debug.apk
