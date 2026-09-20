@@ -1,119 +1,41 @@
-const GATEWAY = "https://ai-gateway.vercel.sh/v1/chat/completions";
-const MAX_ITEMS = 16;
-const MAX_CONTENT = 4000;
+const GATEWAY="https://ai-gateway.vercel.sh/v1/chat/completions";
+const MODEL=process.env.BATO_MODEL||"openai/gpt-4o-mini";
+const MAX={recent:14,steno:10,riznica:8,graph:8,lexical:4,chars:5000};
 
-function boundedItems(value, limit = MAX_ITEMS) {
-  return (Array.isArray(value) ? value : []).slice(-limit).flatMap((item) => {
-    if (!item || typeof item.content !== "string") return [];
-    return [{
-      role: item.role === "assistant" ? "assistant" : "user",
-      content: item.content.slice(0, MAX_CONTENT),
-      timestamp_ms: Number.isFinite(item.timestamp_ms) ? item.timestamp_ms : null,
-      provenance: typeof item.provenance === "string" ? item.provenance.slice(0, 200) : "UNREPORTED",
-      source: typeof item.source === "string" ? item.source.slice(0, 200) : "UNREPORTED"
-    }];
-  });
-}
+function timezone(value){try{const z=typeof value==="string"&&value.length<100?value:"UTC";new Intl.DateTimeFormat("en-CA",{timeZone:z}).format();return z}catch{return"UTC"}}
+function clock(z){const now=new Date();const p=new Intl.DateTimeFormat("en-CA",{timeZone:z,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}).formatToParts(now).reduce((a,x)=>({...a,[x.type]:x.value}),{});return{CURRENT_DATETIME:`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}[${z}]`,CURRENT_DATE:`${p.year}-${p.month}-${p.day}`,CURRENT_TIME:`${p.hour}:${p.minute}:${p.second}`,TIMEZONE:z}}
+function recent(value){return(Array.isArray(value)?value:[]).slice(-MAX.recent).flatMap(x=>x&&typeof x.content==="string"?[{role:x.role==="assistant"?"assistant":"user",content:x.content.slice(0,MAX.chars),timestamp_ms:x.timestamp_ms??null,provenance:String(x.provenance||"UNREPORTED"),source_id:String(x.source_id||"UNREPORTED")}]:[])}
+function items(value,limit){return(Array.isArray(value)?value:[]).slice(0,limit).flatMap(x=>{const text=x?.canonical_text??x?.content;if(typeof text!=="string"||!x?.source_id)return[];return[{source_type:String(x.source_type||"UNKNOWN"),source_id:String(x.source_id),timestamp_ms:x.timestamp_ms??null,canonical_text:text.slice(0,MAX.chars),confidence:Number(x.confidence)||0,provenance:String(x.provenance||"UNREPORTED"),entity_id:x.entity_id||null,cluster_id:x.cluster_id||null,domain:x.domain||null}]}).sort((a,b)=>b.confidence-a.confidence)}
+function attachedIds(bundle){return[...bundle.STENO_RETRIEVAL,...bundle.RIZNICA_RETRIEVAL,...bundle.FAST_GRAPH_CONTEXT,...bundle.LEXICAL_GRAMMAR_CONTEXT].map(x=>x.source_id)}
 
-function boundedKnowledge(value, limit = 8) {
-  return (Array.isArray(value) ? value : []).slice(-limit).flatMap((item) => {
-    if (!item || typeof item.content !== "string") return [];
-    return [{
-      key: String(item.key || "unknown").slice(0, 200),
-      layer: String(item.layer || "unknown").slice(0, 200),
-      content: item.content.slice(0, MAX_CONTENT),
-      timestamp_ms: Number.isFinite(item.timestamp_ms) ? item.timestamp_ms : null,
-      provenance: String(item.provenance || "UNREPORTED").slice(0, 200)
-    }];
-  });
-}
-
-function validTimezone(candidate) {
-  const timezone = typeof candidate === "string" && candidate.length <= 100 ? candidate : "UTC";
-  try {
-    new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format(new Date());
-    return timezone;
-  } catch {
-    return "UTC";
-  }
-}
-
-function currentClock(timezone) {
-  const now = new Date();
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
-  }).formatToParts(now).reduce((result, part) => ({ ...result, [part.type]: part.value }), {});
-  const date = `${parts.year}-${parts.month}-${parts.day}`;
-  const time = `${parts.hour}:${parts.minute}:${parts.second}`;
-  return { current_datetime: `${date}T${time} [${timezone}]`, current_date: date, current_time: time, timezone };
-}
-
-export default async function handler(request, response) {
-  if (request.method !== "POST") return response.status(405).json({ error: "POST required" });
-  const token = process.env.AI_GATEWAY_API_KEY || process.env.VERCEL_OIDC_TOKEN;
-  if (!token) return response.status(503).json({ error: "Provider credential unavailable on server; no response fabricated", provenance: "BLOCKED" });
-  const message = typeof request.body?.message === "string" ? request.body.message.trim() : "";
-  if (!message) return response.status(400).json({ error: "message is required", provenance: "BLOCKED" });
-
-  const timezone = validTimezone(request.body?.timezone);
-  const clock = currentClock(timezone);
-  const recent = boundedItems(request.body?.recent_conversation || request.body?.history);
-  const steno = boundedItems(request.body?.steno_retrieval, 8);
-  const riznica = boundedKnowledge(request.body?.riznica_retrieval, 8);
-  const fastGraph = boundedKnowledge(request.body?.fast_graph_context, 8);
-  const retrievalSources = [
-    ...(steno.length ? ["STENO_RETRIEVAL"] : []),
-    ...(riznica.length ? ["RIZNICA_RETRIEVAL"] : []),
-    ...(fastGraph.length ? ["FAST_GRAPH_CONTEXT"] : [])
-  ];
-  const contextEnvelope = {
-    CURRENT_DATETIME: clock.current_datetime,
-    CURRENT_DATE: clock.current_date,
-    CURRENT_TIME: clock.current_time,
-    TIMEZONE: clock.timezone,
-    RECENT_CONVERSATION: recent,
-    STENO_RETRIEVAL: steno,
-    RIZNICA_RETRIEVAL: riznica,
-    FAST_GRAPH_CONTEXT: fastGraph
-  };
-  const messages = [
-    {
-      role: "system",
-      content: [
-        "You are BATO, a Serbian-first local-first assistant.",
-        "The CURRENT_* values in the attached context are authoritative for this request. Never guess the date or time.",
-        "Use recent conversation and retrieved facts when relevant. Prefer exact stored facts over generic guesses.",
-        "Treat provenance labels as evidence boundaries. Never claim an external effect without evidence.",
-        "Answer honestly and concisely in the user's language.",
-        `CONTEXT_ENVELOPE=${JSON.stringify(contextEnvelope)}`
-      ].join("\n")
-    },
-    ...recent.map(({ role, content, timestamp_ms, provenance }) => ({
-      role,
-      content: `[timestamp_ms=${timestamp_ms ?? "unknown"}; provenance=${provenance}] ${content}`
-    })),
-    { role: "user", content: message }
-  ];
-  const requestedModel = process.env.BATO_MODEL || "openai/gpt-4o-mini";
-  try {
-    const upstream = await fetch(GATEWAY, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
-      body: JSON.stringify({ model: requestedModel, messages })
-    });
-    const raw = await upstream.text();
-    if (!upstream.ok) return response.status(502).json({ error: `Provider ${upstream.status}`, detail: raw.slice(0, 500), provenance: "BLOCKED", http_status: 502 });
-    const data = JSON.parse(raw);
-    const text = data?.choices?.[0]?.message?.content;
-    if (!text) return response.status(502).json({ error: "Provider returned no assistant content", provenance: "BLOCKED", http_status: 502 });
-    return response.status(200).json({
-      response: text, provenance: "PROVIDER_REAL", local_fallback: false, imported: false,
-      retrieval_used: retrievalSources.length > 0, retrieval_sources: retrievalSources,
-      http_status: 200, provider: "vercel-ai-gateway",
-      provider_model: data.model || requestedModel, ...clock
-    });
-  } catch (error) {
-    return response.status(502).json({ error: "Provider request failed", detail: String(error?.message || error), provenance: "BLOCKED", http_status: 502 });
-  }
+export default async function handler(req,res){
+ if(req.method!=="POST")return res.status(405).json({error:"POST required",provenance:"BLOCKED"});
+ const token=process.env.AI_GATEWAY_API_KEY||process.env.VERCEL_OIDC_TOKEN;if(!token)return res.status(503).json({error:"Provider credential unavailable; no answer fabricated",provenance:"BLOCKED"});
+ const message=String(req.body?.current_user_message||req.body?.message||"").trim();if(!message)return res.status(400).json({error:"current_user_message is required",provenance:"BLOCKED"});
+ const current=clock(timezone(req.body?.timezone));
+ const bundle={...current,RECENT_CONVERSATION:recent(req.body?.recent_conversation),RESOLVED_ENTITIES:(Array.isArray(req.body?.resolved_entities)?req.body.resolved_entities:[]).slice(0,12),FAST_GRAPH_CONTEXT:items(req.body?.fast_graph_context,MAX.graph),STENO_RETRIEVAL:items(req.body?.steno_retrieval,MAX.steno),RIZNICA_RETRIEVAL:items(req.body?.riznica_retrieval,MAX.riznica),LEXICAL_GRAMMAR_CONTEXT:items(req.body?.lexical_grammar_context,MAX.lexical),FAST_GRAPH_RESOLUTION:String(req.body?.fast_graph_resolution||"UNRESOLVED"),AMBIGUITY_CANDIDATES:(Array.isArray(req.body?.ambiguity_candidates)?req.body.ambiguity_candidates:[]).slice(0,3),CURRENT_USER_MESSAGE:message};
+ const ids=attachedIds(bundle);
+ const contract=[
+  "You are BATO, one continuous Serbian-first assistant, not a stateless encyclopedia.",
+  "Return ONLY a JSON object: {answer:string, used_item_ids:string[], grounding_summary:string, current_datetime_used:boolean}.",
+  "Continue the user's specific prior framing. When relevant retrieved conversation exists, it outranks generic background knowledge.",
+  "Never claim you used an item unless its exact source_id appears in used_item_ids and materially controls the answer.",
+  "If retrieved context conflicts with world knowledge, explicitly separate 'our prior discussion/project framing' from general historical facts.",
+  "If AMBIGUITY_CANDIDATES has two plausible entries, ask one short disambiguation question and do not guess.",
+  "Use natural idiomatic Serbian with correct cases, verb forms and sentence structure. Do not translate word by word.",
+  "CURRENT_* fields are authoritative. Never guess date or time.",
+  "Do not mention internal source IDs in the conversational answer.",
+  `STRUCTURED_CONTEXT=${JSON.stringify(bundle)}`
+ ].join("\n");
+ const messages=[{role:"system",content:contract},...bundle.RECENT_CONVERSATION.map(x=>({role:x.role,content:`[${x.source_id}; ${x.provenance}; ${x.timestamp_ms??"unknown"}] ${x.content}`})),{role:"user",content:message}];
+ try{
+  const upstream=await fetch(GATEWAY,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${token}`},body:JSON.stringify({model:MODEL,messages,response_format:{type:"json_object"},temperature:.2})});
+  const raw=await upstream.text();if(!upstream.ok)return res.status(502).json({error:`Provider ${upstream.status}`,detail:raw.slice(0,700),provenance:"BLOCKED",http_status:502});
+  const data=JSON.parse(raw);const content=data?.choices?.[0]?.message?.content;if(!content)return res.status(502).json({error:"Provider returned no content; no answer fabricated",provenance:"BLOCKED"});
+  let grounded;try{grounded=JSON.parse(content)}catch{return res.status(502).json({error:"Provider violated grounded JSON contract",detail:content.slice(0,500),provenance:"BLOCKED"})}
+  if(typeof grounded.answer!=="string"||!grounded.answer.trim())return res.status(502).json({error:"Provider returned no answer; no answer fabricated",provenance:"BLOCKED"});
+  const used=[...new Set(Array.isArray(grounded.used_item_ids)?grounded.used_item_ids.filter(id=>ids.includes(id)):[])];
+  const sources=[...new Set(used.map(id=>id.split(":")[0]==="GRAPH"?"FAST_GRAPH_CONTEXT":id.split(":")[0]==="STENO"?"STENO_RETRIEVAL":id.split(":")[0]==="RIZNICA"?"RIZNICA_RETRIEVAL":"LEXICAL_GRAMMAR_CONTEXT"))];
+  return res.status(200).json({response:grounded.answer.trim(),provenance:"PROVIDER_REAL",local_fallback:false,imported:false,http_status:200,provider:"vercel-ai-gateway",provider_model:data.model||MODEL,retrieval_used:used.length>0,retrieval_sources:sources,retrieved_item_ids:used,fast_graph_resolution:bundle.FAST_GRAPH_RESOLUTION,current_datetime_used:grounded.current_datetime_used===true,grounding_summary:String(grounded.grounding_summary||""),context_bundle:bundle});
+ }catch(error){return res.status(502).json({error:"Provider request failed",detail:String(error?.message||error),provenance:"BLOCKED",http_status:502})}
 }
