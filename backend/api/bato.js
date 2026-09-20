@@ -33,8 +33,14 @@ export default async function handler(req,res){
   const raw=await upstream.text();if(!upstream.ok)return res.status(502).json({error:`Provider ${upstream.status}`,detail:raw.slice(0,700),provenance:"BLOCKED",http_status:502});
   const data=JSON.parse(raw);const content=data?.choices?.[0]?.message?.content;if(!content)return res.status(502).json({error:"Provider returned no content; no answer fabricated",provenance:"BLOCKED"});
   let grounded;try{grounded=JSON.parse(content)}catch{return res.status(502).json({error:"Provider violated grounded JSON contract",detail:content.slice(0,500),provenance:"BLOCKED"})}
+  let declared=Array.isArray(grounded.used_item_ids)?grounded.used_item_ids.filter(id=>ids.includes(id)):[];
+  if(ids.length&&declared.length===0){
+   const auditMessages=[...messages,{role:"assistant",content:JSON.stringify(grounded)},{role:"user",content:`GROUNDING AUDIT: The answer may paraphrase attached evidence. Return the same JSON contract. If any exact/canonical retrieved fact materially controlled the answer, list every corresponding source_id from this allowed set: ${JSON.stringify(ids)}. If none controlled it, keep used_item_ids empty and rewrite the answer so it does not imply retrieved-memory grounding.`}];
+   const audit=await fetch(GATEWAY,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${token}`},body:JSON.stringify({model:MODEL,messages:auditMessages,response_format:{type:"json_object"},temperature:0})});
+   if(audit.ok){const auditData=await audit.json();const auditContent=auditData?.choices?.[0]?.message?.content;try{const checked=JSON.parse(auditContent);if(typeof checked.answer==="string"&&checked.answer.trim()){grounded=checked;declared=Array.isArray(checked.used_item_ids)?checked.used_item_ids.filter(id=>ids.includes(id)):[]}}catch{}}
+  }
   if(typeof grounded.answer!=="string"||!grounded.answer.trim())return res.status(502).json({error:"Provider returned no answer; no answer fabricated",provenance:"BLOCKED"});
-  const used=[...new Set(Array.isArray(grounded.used_item_ids)?grounded.used_item_ids.filter(id=>ids.includes(id)):[])];
+  const used=[...new Set(declared)];
   const sources=[...new Set(used.map(id=>id.split(":")[0]==="GRAPH"?"FAST_GRAPH_CONTEXT":id.split(":")[0]==="STENO"?"STENO_RETRIEVAL":id.split(":")[0]==="RIZNICA"?"RIZNICA_RETRIEVAL":"LEXICAL_GRAMMAR_CONTEXT"))];
   return res.status(200).json({response:grounded.answer.trim(),provenance:"PROVIDER_REAL",local_fallback:false,imported:false,http_status:200,provider:"vercel-ai-gateway",provider_model:data.model||MODEL,retrieval_used:used.length>0,retrieval_sources:sources,retrieved_item_ids:used,fast_graph_resolution:bundle.FAST_GRAPH_RESOLUTION,current_datetime_used:grounded.current_datetime_used===true,grounding_summary:String(grounded.grounding_summary||""),context_bundle:bundle});
  }catch(error){return res.status(502).json({error:"Provider request failed",detail:String(error?.message||error),provenance:"BLOCKED",http_status:502})}
