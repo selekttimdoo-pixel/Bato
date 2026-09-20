@@ -1,6 +1,7 @@
 const GATEWAY="https://ai-gateway.vercel.sh/v1/chat/completions";
-const MODEL=process.env.BATO_MODEL||"openai/gpt-5.6-sol";
+const MODEL=process.env.BATO_MODEL||"openai/gpt-4o";
 const MAX={recent:14,steno:10,riznica:8,graph:8,lexical:4,chars:5000};
+
 
 function timezone(value){try{const z=typeof value==="string"&&value.length<100?value:"UTC";new Intl.DateTimeFormat("en-CA",{timeZone:z}).format();return z}catch{return"UTC"}}
 function clock(z){const now=new Date();const p=new Intl.DateTimeFormat("en-CA",{timeZone:z,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}).formatToParts(now).reduce((a,x)=>({...a,[x.type]:x.value}),{});return{CURRENT_DATETIME:`${p.year}-${p.month}-${p.day}T${p.hour}:${p.minute}:${p.second}[${z}]`,CURRENT_DATE:`${p.year}-${p.month}-${p.day}`,CURRENT_TIME:`${p.hour}:${p.minute}:${p.second}`,TIMEZONE:z}}
@@ -8,6 +9,7 @@ function recent(value){return(Array.isArray(value)?value:[]).slice(-MAX.recent).
 function items(value,limit){return(Array.isArray(value)?value:[]).slice(0,limit).flatMap(x=>{const text=x?.canonical_text??x?.content;if(typeof text!=="string"||!x?.source_id)return[];return[{source_type:String(x.source_type||"UNKNOWN"),source_id:String(x.source_id),timestamp_ms:x.timestamp_ms??null,canonical_text:text.slice(0,MAX.chars),confidence:Number(x.confidence)||0,provenance:String(x.provenance||"UNREPORTED"),entity_id:x.entity_id||null,cluster_id:x.cluster_id||null,domain:x.domain||null}]}).sort((a,b)=>b.confidence-a.confidence)}
 function attachedIds(bundle){return[...bundle.STENO_RETRIEVAL,...bundle.RIZNICA_RETRIEVAL,...bundle.FAST_GRAPH_CONTEXT,...bundle.LEXICAL_GRAMMAR_CONTEXT].map(x=>x.source_id)}
 function evidenceOverlap(answer,item){const stop=new Set(["kroz","koji","koja","koje","biti","smo","sam","nije","jedan","jednog","na","u","i","je","se","da","za","od","o","a"]);const tok=s=>new Set(String(s).toLocaleLowerCase("sr").match(/[\p{L}\p{N}-]{3,}/gu)?.filter(x=>!stop.has(x))||[]);const a=tok(answer),b=tok(item.canonical_text);if(!b.size)return 0;let hit=0;b.forEach(x=>{if(a.has(x))hit++});return hit/b.size}
+
 
 export default async function handler(req,res){
  if(req.method!=="POST")return res.status(405).json({error:"POST required",provenance:"BLOCKED"});
@@ -29,7 +31,7 @@ export default async function handler(req,res){
   "CURRENT_* fields are authoritative. Never guess date or time.",
   "Do not mention internal source IDs in the conversational answer.",
   `STRUCTURED_CONTEXT=${JSON.stringify(bundle)}`
- ].join("\n");
+ ].join("\n")
  const messages=[{role:"system",content:contract},...bundle.RECENT_CONVERSATION.map(x=>({role:x.role,content:`[${x.source_id}; ${x.provenance}; ${x.timestamp_ms??"unknown"}] ${x.content}`})),{role:"user",content:message}];
  try{
   const upstream=await fetch(GATEWAY,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${token}`},body:JSON.stringify({model:MODEL,messages,response_format:{type:"json_object"},temperature:.2})});
@@ -60,3 +62,4 @@ export default async function handler(req,res){
   return res.status(200).json({response:grounded.answer.trim(),provenance:"PROVIDER_REAL",local_fallback:false,imported:false,http_status:200,provider:"vercel-ai-gateway",provider_model:data.model||MODEL,retrieval_used:used.length>0,retrieval_sources:sources,retrieved_item_ids:used,fast_graph_resolution:bundle.FAST_GRAPH_RESOLUTION,current_datetime_used:grounded.current_datetime_used===true,grounding_summary:String(grounded.grounding_summary||""),context_bundle:bundle});
  }catch(error){return res.status(502).json({error:"Provider request failed",detail:String(error?.message||error),provenance:"BLOCKED",http_status:502})}
 }
+
