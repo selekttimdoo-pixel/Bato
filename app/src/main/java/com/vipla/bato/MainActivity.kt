@@ -7,7 +7,6 @@ import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
-import android.speech.tts.TextToSpeech
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -32,6 +31,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.vipla.bato.cockpit.*
 import com.vipla.bato.data.*
 import com.vipla.bato.ui.MainViewModel
+import com.vipla.bato.voice.AndroidSerbianVoiceEngine
 import java.text.DateFormat
 import java.util.*
 
@@ -52,13 +52,14 @@ fun BatoApp(vm: MainViewModel = viewModel()) {
     val events by vm.events.collectAsStateWithLifecycle()
     val states by vm.states.collectAsStateWithLifecycle()
     val log by vm.cockpitLog.collectAsStateWithLifecycle()
+    val runtime by vm.runtimeValues.collectAsStateWithLifecycle()
     val lastAssistant by vm.lastAssistant.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var ttsEnabled by remember { mutableStateOf(true) }
-    val tts = remember { TextToSpeech(context) { } }
-    DisposableEffect(Unit) { onDispose { tts.shutdown() } }
+    val voiceEngine = remember { AndroidSerbianVoiceEngine(context) }
+    DisposableEffect(Unit) { onDispose { voiceEngine.shutdown() } }
     LaunchedEffect(lastAssistant) {
-        lastAssistant?.takeIf { ttsEnabled }?.let { tts.speak(it, TextToSpeech.QUEUE_FLUSH, null, "bato-response") }
+        lastAssistant?.takeIf { ttsEnabled }?.let { text -> voiceEngine.speak(text) { result -> vm.recordVoiceState(result.status, "${result.engine}|${result.voiceName}|${result.evidence}|NORMALIZED=${result.normalizedText}") } }
     }
 
     Scaffold(
@@ -77,7 +78,7 @@ fun BatoApp(vm: MainViewModel = viewModel()) {
                 BatoTab.TIMELINE -> TimelineScreen(events)
                 BatoTab.VAULT -> VaultScreen(vm)
                 BatoTab.SEARCH -> SearchScreen(vm)
-                BatoTab.DIAGNOSTICS -> DiagnosticsScreen(vm, states, log)
+                BatoTab.DIAGNOSTICS -> DiagnosticsScreen(vm, states, log, runtime)
             }
         }
     }
@@ -118,7 +119,7 @@ private fun ConversationScreen(vm: MainViewModel, events: List<StenoEvent>, ttsE
                 listening = false
                 val recoverable = error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY
                 speechError = when (error) {
-                    SpeechRecognizer.ERROR_NO_MATCH -> "No speech recognized — try again."
+                    SpeechRecognizer.ERROR_NO_MATCH -> "Nisam razumeo, pokušaj ponovo."
                     SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech heard — tap MIC and try again."
                     SpeechRecognizer.ERROR_AUDIO -> "Audio capture error — check the microphone and try again."
                     SpeechRecognizer.ERROR_CLIENT -> "Speech recognition session ended — tap MIC to retry."
@@ -135,7 +136,7 @@ private fun ConversationScreen(vm: MainViewModel, events: List<StenoEvent>, ttsE
                 listening = false
                 val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
                 if (!text.isNullOrBlank()) { vm.recordMicState("TRANSCRIBED", text); vm.sendMessage(text, "IN_APP_MICROPHONE") }
-                else { speechError = "Transcription returned no text"; vm.recordMicState("FAIL", speechError!!) }
+                else { speechError = "Nisam razumeo, pokušaj ponovo."; vm.recordMicState("READY_RETRY", speechError!!) }
             }
             override fun onPartialResults(partialResults: Bundle?) {}
             override fun onEvent(eventType: Int, params: Bundle?) {}
@@ -157,7 +158,7 @@ private fun ConversationScreen(vm: MainViewModel, events: List<StenoEvent>, ttsE
     Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("BATO conversation", style = MaterialTheme.typography.titleLarge)
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("Spoken response / TTS", Modifier.weight(1f)); Switch(checked = ttsEnabled, onCheckedChange = setTts)
+            Text("BATO voice · Serbian normalized", Modifier.weight(1f)); Switch(checked = ttsEnabled, onCheckedChange = setTts)
         }
         Text("BATO bridge: ${vm.endpoint()}", style = MaterialTheme.typography.labelSmall)
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -236,19 +237,23 @@ private fun SearchScreen(vm: MainViewModel) {
     var query by remember { mutableStateOf("") }
     val results by vm.searchResults.collectAsStateWithLifecycle()
     val knowledgeResults by vm.knowledgeSearchResults.collectAsStateWithLifecycle()
-    Column(Modifier.fillMaxSize().padding(10.dp)) { Text("Search STENO + Riznica", style = MaterialTheme.typography.titleLarge); Row { OutlinedTextField(query, { query = it }, Modifier.weight(1f), label = { Text("Exact or partial text") }); Button({ vm.search(query) }, Modifier.padding(start = 6.dp)) { Text("Search") } }; LazyColumn { items(knowledgeResults, key = { it.key }) { Text("${it.layer}: ${it.content}", Modifier.fillMaxWidth().padding(8.dp)) }; items(results, key = { "s-${it.id}" }) { Text("${it.role}: ${it.rawText}", Modifier.fillMaxWidth().padding(8.dp)) } } }
+    Column(Modifier.fillMaxSize().padding(10.dp)) { Text("Search STENO + Riznica", style = MaterialTheme.typography.titleLarge); Row { OutlinedTextField(query, { query = it }, Modifier.weight(1f), label = { Text("Exact or partial text") }); Button({ vm.search(query) }, Modifier.padding(start = 6.dp)) { Text("Search") } }; LazyColumn { items(knowledgeResults, key = { it.key }) { Text("RIZNICA · ${it.layer} · ${it.key}\n${it.content}\nPROVENANCE=LOCAL_RIZNICA", Modifier.fillMaxWidth().padding(8.dp)) }; items(results, key = { "s-${it.id}" }) { Text("STENO:${it.id} · ${it.role}\n${it.rawText}\nSOURCE=${if(it.providerState.contains("IMPORTED")) "IMPORTED_STENO" else "LOCAL_STENO"} · ${it.providerState}", Modifier.fillMaxWidth().padding(8.dp)) } } }
 }
 
 @Composable
-private fun DiagnosticsScreen(vm: MainViewModel, states: List<ControlState>, log: List<CockpitEvent>) {
+private fun DiagnosticsScreen(vm: MainViewModel, states: List<ControlState>, log: List<CockpitEvent>, runtime: List<RuntimeValue>) {
     val summary by vm.selfTestSummary.collectAsStateWithLifecycle()
+    var showContext by remember { mutableStateOf(false) }
+    val contextBundle = runtime.firstOrNull { it.key == "LAST_CONTEXT_BUNDLE" }?.value
     val green = states.count { it.light == "GREEN" }; val amber = (51 - states.count { it.light == "DARK" } - green).coerceAtLeast(0); val dark = states.count { it.light == "DARK" }
     Column(Modifier.fillMaxSize().padding(10.dp)) {
         Text("Diagnostics / self-test / event log", style = MaterialTheme.typography.titleLarge)
         Text("GREEN=$green · AMBER=$amber · DARK=$dark")
         Text(summary)
         Button(onClick = vm::testAll, modifier = Modifier.padding(vertical = 8.dp)) { Text("Testiraj 51 kontrolu: PASS + forced BLOCK") }
+        Button(onClick = { showContext = true }, enabled = contextBundle != null) { Text("Inspect exact context bundle") }
         Text("Local tests never prove external/Windows/live effects.", color = Color(0xFFFFC857), fontWeight = FontWeight.Bold)
         LazyColumn(verticalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.padding(top = 8.dp)) { items(log, key = { it.id }) { e -> Surface(color = Color(0xFF20252B), shape = RoundedCornerShape(7.dp)) { Column(Modifier.fillMaxWidth().padding(8.dp)) { Text("${e.controlCode ?: "SYS"} · ${e.eventType} · ${e.result}", fontWeight = FontWeight.Bold); Text(e.evidence); Text(DateFormat.getDateTimeInstance().format(Date(e.timestamp)), style = MaterialTheme.typography.labelSmall) } } } }
     }
+    if (showContext) AlertDialog(onDismissRequest = { showContext=false }, confirmButton = { TextButton(onClick={showContext=false}){Text("Close")} }, title={Text("LAST_CONTEXT_BUNDLE")}, text={Text(contextBundle ?: "No provider context captured")})
 }
