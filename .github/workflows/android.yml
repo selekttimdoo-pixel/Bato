@@ -65,7 +65,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.3.3-context
-          name: VIPLA BATO Android v0.3.3-context
-          body: Provider context, authoritative server time, bounded STENO/Riznica retrieval, and response provenance.
+          tag_name: v0.4.0-continuity
+          name: VIPLA BATO Android v0.4.0-continuity
+          body: Semantic continuity, grounded STENO/Riznica/FAST GRAPH retrieval, Serbian normalization, and provider-neutral BATO voice adapter.
           files: app/build/outputs/apk/debug/app-debug.apk
