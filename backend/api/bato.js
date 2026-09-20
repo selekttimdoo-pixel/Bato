@@ -7,6 +7,7 @@ function clock(z){const now=new Date();const p=new Intl.DateTimeFormat("en-CA",{
 function recent(value){return(Array.isArray(value)?value:[]).slice(-MAX.recent).flatMap(x=>x&&typeof x.content==="string"?[{role:x.role==="assistant"?"assistant":"user",content:x.content.slice(0,MAX.chars),timestamp_ms:x.timestamp_ms??null,provenance:String(x.provenance||"UNREPORTED"),source_id:String(x.source_id||"UNREPORTED")}]:[])}
 function items(value,limit){return(Array.isArray(value)?value:[]).slice(0,limit).flatMap(x=>{const text=x?.canonical_text??x?.content;if(typeof text!=="string"||!x?.source_id)return[];return[{source_type:String(x.source_type||"UNKNOWN"),source_id:String(x.source_id),timestamp_ms:x.timestamp_ms??null,canonical_text:text.slice(0,MAX.chars),confidence:Number(x.confidence)||0,provenance:String(x.provenance||"UNREPORTED"),entity_id:x.entity_id||null,cluster_id:x.cluster_id||null,domain:x.domain||null}]}).sort((a,b)=>b.confidence-a.confidence)}
 function attachedIds(bundle){return[...bundle.STENO_RETRIEVAL,...bundle.RIZNICA_RETRIEVAL,...bundle.FAST_GRAPH_CONTEXT,...bundle.LEXICAL_GRAMMAR_CONTEXT].map(x=>x.source_id)}
+function evidenceOverlap(answer,item){const stop=new Set(["kroz","koji","koja","koje","biti","smo","sam","nije","jedan","jednog","na","u","i","je","se","da","za","od","o","a"]);const tok=s=>new Set(String(s).toLocaleLowerCase("sr").match(/[\p{L}\p{N}-]{3,}/gu)?.filter(x=>!stop.has(x))||[]);const a=tok(answer),b=tok(item.canonical_text);if(!b.size)return 0;let hit=0;b.forEach(x=>{if(a.has(x))hit++});return hit/b.size}
 
 export default async function handler(req,res){
  if(req.method!=="POST")return res.status(405).json({error:"POST required",provenance:"BLOCKED"});
@@ -38,6 +39,11 @@ export default async function handler(req,res){
    const auditMessages=[...messages,{role:"assistant",content:JSON.stringify(grounded)},{role:"user",content:`GROUNDING AUDIT: The answer may paraphrase attached evidence. Return the same JSON contract. If any exact/canonical retrieved fact materially controlled the answer, list every corresponding source_id from this allowed set: ${JSON.stringify(ids)}. If none controlled it, keep used_item_ids empty and rewrite the answer so it does not imply retrieved-memory grounding.`}];
    const audit=await fetch(GATEWAY,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${token}`},body:JSON.stringify({model:MODEL,messages:auditMessages,response_format:{type:"json_object"},temperature:0})});
    if(audit.ok){const auditData=await audit.json();const auditContent=auditData?.choices?.[0]?.message?.content;try{const checked=JSON.parse(auditContent);if(typeof checked.answer==="string"&&checked.answer.trim()){grounded=checked;declared=Array.isArray(checked.used_item_ids)?checked.used_item_ids.filter(id=>ids.includes(id)):[]}}catch{}}
+  }
+  if(declared.length===0){
+   const all=[...bundle.STENO_RETRIEVAL,...bundle.RIZNICA_RETRIEVAL,...bundle.FAST_GRAPH_CONTEXT,...bundle.LEXICAL_GRAMMAR_CONTEXT];
+   declared=all.filter(x=>evidenceOverlap(grounded.answer,x)>=0.45).map(x=>x.source_id);
+   if(declared.length)grounded.grounding_summary=`SERVER_VALIDATED_TEXTUAL_GROUNDING: ${declared.join(",")}; ${String(grounded.grounding_summary||"")}`;
   }
   if(typeof grounded.answer!=="string"||!grounded.answer.trim())return res.status(502).json({error:"Provider returned no answer; no answer fabricated",provenance:"BLOCKED"});
   const used=[...new Set(declared)];
