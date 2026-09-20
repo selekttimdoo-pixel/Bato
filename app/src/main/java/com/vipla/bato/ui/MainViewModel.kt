@@ -36,8 +36,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     init {
         viewModelScope.launch {
             repo.putKnowledge("steno-wal", "STENO WAL", "Durable local raw event log committed before every remote provider request")
-            repo.putKnowledge("entity:roman_empire", "FAST GRAPH", "entity=Roman Empire; aliases=Rimsko carstvo|Rim|Roman Empire; cluster=history:roman; domain=history; relation=HAS_PHASE:Western Roman Empire; provenance=BUILTIN_SEED")
-            repo.putKnowledge("entity:western_roman_empire", "FAST GRAPH", "entity=Western Roman Empire; aliases=Zapadno rimsko carstvo|Zapadni Rim; cluster=history:roman; domain=history; relation=PART_OF:Roman Empire; provenance=BUILTIN_SEED")
+            repo.putKnowledge("entity:roman_empire", "FAST GRAPH", "entity=ROMAN_EMPIRE; aliases=Rimsko carstvo|Rim|Roman Empire; cluster=history:roman; domain=history; relation=HAS_POLITICAL_SUCCESSOR:EASTERN_ROMAN_EMPIRE; relation=HAS_WESTERN_GOVERNMENT:WESTERN_ROMAN_EMPIRE; rule=NOT_SYNONYM_OF:WESTERN_ROMAN_EMPIRE; provenance=BUILTIN_SEED")
+            repo.putKnowledge("entity:western_roman_empire", "FAST GRAPH", "entity=WESTERN_ROMAN_EMPIRE; aliases=Zapadno rimsko carstvo|Zapadni Rim; cluster=history:roman; domain=history; relation=PART_OF:ROMAN_EMPIRE; conventional_end=476; provenance=BUILTIN_SEED")
+            repo.putKnowledge("entity:eastern_roman_empire", "FAST GRAPH", "entity=EASTERN_ROMAN_EMPIRE; aliases=Istočno rimsko carstvo|Istočni Rim|Roman state in Constantinople; cluster=history:roman; domain=history; relation=CONTINUATION_OF:ROMAN_EMPIRE; capital=Constantinople; end=1453; self_identity=Romans|Rhomaioi|Romeji; provenance=BUILTIN_SEED")
+            repo.putKnowledge("entity:byzantine_empire", "FAST GRAPH", "entity=BYZANTINE_EMPIRE; aliases=Vizantijsko carstvo|Vizantija|Byzantine Empire; cluster=history:roman; domain=historiography; relation=LATER_HISTORIOGRAPHICAL_LABEL_FOR:EASTERN_ROMAN_EMPIRE; contemporary_self_name=Roman Empire; provenance=BUILTIN_SEED")
             repo.putKnowledge("entity:vipla_bato", "FAST GRAPH", "entity=VIPLA/BATO; aliases=VIPLA|BATO|Cockpit; cluster=project:bato; domain=project; relation=USES:STENO,Riznica,FAST GRAPH; provenance=BUILTIN_SEED")
             repo.putKnowledge("riznica", "Riznica", "Local Room knowledge-object vault used by Vault and Search")
             repo.putKnowledge("serbian-lexicon", "Active Serbian Lexicon", "Serbian recognition locale and lexical provider hook; external corpus remains unproven")
