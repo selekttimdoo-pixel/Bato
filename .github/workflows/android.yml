@@ -39,6 +39,12 @@ jobs:
           grep -F "android.permission.INTERNET" /tmp/apk-permissions.txt
           grep -F "android.permission.RECORD_AUDIO" /tmp/apk-permissions.txt
 
+      - name: Enable KVM for Android emulator
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
       - name: Android emulator live bridge test
         uses: reactivecircus/android-emulator-runner@v2
         with:
