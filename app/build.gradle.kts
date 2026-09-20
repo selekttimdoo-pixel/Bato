@@ -12,8 +12,9 @@ android {
         applicationId = "com.vipla.bato"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.3.2-speech"
+        versionCode = 6
+        versionName = "0.3.3-context"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true }
     compileOptions {
@@ -37,4 +38,6 @@ dependencies {
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
 }
