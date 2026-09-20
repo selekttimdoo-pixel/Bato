@@ -1,6 +1,5 @@
 package com.vipla.bato.ai
 
-
 import com.vipla.bato.data.RetrievedItem
 import com.vipla.bato.data.StenoEvent
 import kotlinx.coroutines.Dispatchers
@@ -12,14 +11,12 @@ import java.net.URL
 import java.util.TimeZone
 import javax.net.ssl.HttpsURLConnection
 
-
 sealed class ProviderResult {
     data class Response(val text:String,val httpStatus:Int,val model:String,val provenance:String,val retrievalUsed:Boolean,val retrievalSources:List<String>,val retrievedItemIds:List<String>,val graphResolution:String,val currentDatetimeUsed:Boolean,val contextBundle:String):ProviderResult()
     data class Blocked(val reason:String):ProviderResult()
 }
 data class ProviderContext(val recentConversation:List<StenoEvent>,val stenoRetrieval:List<RetrievedItem>,val riznicaRetrieval:List<RetrievedItem>,val fastGraphContext:List<RetrievedItem>,val lexicalGrammarContext:List<RetrievedItem>,val resolvedEntities:List<String>,val graphResolution:String,val ambiguityCandidates:List<String>,val retrievalRequired:Boolean=false)
 interface ProviderBridge { suspend fun respond(message:String,context:ProviderContext):ProviderResult }
-
 
 class HttpProviderBridge(private val endpoint:String):ProviderBridge {
     override suspend fun respond(message:String,context:ProviderContext):ProviderResult=withContext(Dispatchers.IO){
@@ -37,3 +34,22 @@ class HttpProviderBridge(private val endpoint:String):ProviderBridge {
             var code=0; var raw=""; var attempt=0
             do {
                 attempt++
+                val connection=URL(endpoint).openConnection() as HttpsURLConnection
+                connection.requestMethod="POST"; connection.connectTimeout=15_000; connection.readTimeout=60_000; connection.doOutput=true; connection.setRequestProperty("Content-Type","application/json")
+                connection.outputStream.use{it.write(body.toString().toByteArray())}; code=connection.responseCode
+                raw=(if(code in 200..299)connection.inputStream else connection.errorStream)?.bufferedReader()?.use{it.readText()}.orEmpty(); connection.disconnect()
+                if(code in setOf(429,502,503,504) && attempt<3) delay(350L*attempt)
+            } while(code in setOf(429,502,503,504) && attempt<3)
+            if(code !in 200..299) ProviderResult.Blocked("Provider HTTP $code: ${raw.take(400)}") else {
+                val json=JSONObject(raw); val answer=json.optString("response")
+                if(answer.isBlank()) ProviderResult.Blocked("Provider returned no response field; no response was fabricated.") else {
+                    fun strings(name:String):List<String>{val a=json.optJSONArray(name);return(0 until(a?.length()?:0)).map{a!!.optString(it)}}
+                    ProviderResult.Response(answer,code,json.optString("provider_model","unreported"),json.optString("provenance","PROVIDER_REAL"),json.optBoolean("retrieval_used",false),strings("retrieval_sources"),strings("retrieved_item_ids"),json.optString("fast_graph_resolution",context.graphResolution),json.optBoolean("current_datetime_used",false),json.optJSONObject("context_bundle")?.toString(2).orEmpty())
+                }
+            }
+        }.getOrElse { error ->
+            val detail = error.message ?: "no detail"
+            ProviderResult.Blocked("Provider bridge failed [${error::class.java.simpleName}]: $detail")
+        }
+    }
+}
