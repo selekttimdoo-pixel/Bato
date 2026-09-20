@@ -2,6 +2,8 @@ package com.vipla.bato.ui
 
 import android.app.Application
 import android.content.Context
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.vipla.bato.ai.*
@@ -48,13 +50,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (text.isBlank() || _busy.value) return
         viewModelScope.launch {
             _busy.value = true
-            repo.append("USER", text.trim(), "STENO_FIRST:$source")
+            val userEvent = repo.append("USER", text.trim(), "STENO_FIRST:$source")
             repo.log(null, "CONVERSATION", "USER_STORED", "Raw user event persisted before provider processing")
-            val context = repo.context()
-            when (val result = HttpProviderBridge(endpoint()).respond(text.trim(), context)) {
+            val internetGranted = getApplication<Application>().packageManager.checkPermission(
+                Manifest.permission.INTERNET, getApplication<Application>().packageName
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!internetGranted) {
+                val reason = "Provider bridge blocked: INTERNET is absent from the installed package"
+                repo.append("SYSTEM", reason, "PROVIDER_BLOCKED")
+                repo.log(null, "PROVIDER", "BLOCK", reason)
+                _busy.value = false
+                return@launch
+            }
+            val recent = repo.context(13).filter { it.id != userEvent.id && it.role in setOf("USER", "ASSISTANT") }.takeLast(12)
+            val retrieval = repo.retrieve(text.trim(), userEvent.id)
+            val providerContext = ProviderContext(recent, retrieval.steno, retrieval.riznica, retrieval.fastGraph)
+            when (val result = HttpProviderBridge(endpoint()).respond(text.trim(), providerContext)) {
                 is ProviderResult.Response -> {
-                    repo.append("ASSISTANT", result.text, "PROVIDER_RESPONSE")
-                    repo.log(null, "PROVIDER", "PASS", "Assistant response persisted to STENO")
+                    val sources = result.retrievalSources.joinToString(",").ifBlank { "NONE" }
+                    val state = "${result.provenance}|LOCAL_FALLBACK=false|IMPORTED=false|RETRIEVAL_USED=${result.retrievalUsed}|RETRIEVAL_SOURCES=$sources|HTTP_STATUS=${result.httpStatus}|PROVIDER_MODEL=${result.model}"
+                    repo.append("ASSISTANT", result.text, state)
+                    repo.log(null, "PROVIDER", "PASS", "Assistant response persisted to STENO; $state")
                     _lastAssistant.value = result.text
                 }
                 is ProviderResult.Blocked -> {
