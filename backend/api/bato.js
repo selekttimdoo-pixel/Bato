@@ -35,7 +35,7 @@ export default async function handler(req,res){
  const messages=[{role:"system",content:contract},...bundle.RECENT_CONVERSATION.map(x=>({role:x.role,content:`[${x.source_id}; ${x.provenance}; ${x.timestamp_ms??"unknown"}] ${x.content}`})),{role:"user",content:message}];
  try{
   const upstream=await fetch(GATEWAY,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${token}`},body:JSON.stringify({model:MODEL,messages,response_format:{type:"json_object"},temperature:.2})});
-  const raw=await upstream.text();if(!upstream.ok)return res.status(502).json({error:`Provider ${upstream.status}`,detail:raw.slice(0,700),provenance:"BLOCKED",http_status:502});
+  const raw=await upstream.text();if(!upstream.ok){const status=upstream.status===429?429:502;if(status===429)res.setHeader("Retry-After",upstream.headers.get("retry-after")||"16");return res.status(status).json({error:`Provider ${upstream.status}`,detail:raw.slice(0,700),provenance:"BLOCKED",http_status:status})}
   const data=JSON.parse(raw);const content=data?.choices?.[0]?.message?.content;if(!content)return res.status(502).json({error:"Provider returned no content; no answer fabricated",provenance:"BLOCKED"});
   let grounded;try{grounded=JSON.parse(content)}catch{return res.status(502).json({error:"Provider violated grounded JSON contract",detail:content.slice(0,500),provenance:"BLOCKED"})}
   const contextResolves=bundle.FAST_GRAPH_RESOLUTION.startsWith("RESOLVED:")||(bundle.RECENT_CONVERSATION.length>0&&ids.length>0);

@@ -37,8 +37,10 @@ class HttpProviderBridge(private val endpoint:String):ProviderBridge {
                 val connection=URL(endpoint).openConnection() as HttpsURLConnection
                 connection.requestMethod="POST"; connection.connectTimeout=15_000; connection.readTimeout=60_000; connection.doOutput=true; connection.setRequestProperty("Content-Type","application/json")
                 connection.outputStream.use{it.write(body.toString().toByteArray())}; code=connection.responseCode
-                raw=(if(code in 200..299)connection.inputStream else connection.errorStream)?.bufferedReader()?.use{it.readText()}.orEmpty(); connection.disconnect()
-                if(code in setOf(429,502,503,504) && attempt<3) delay(350L*attempt)
+                raw=(if(code in 200..299)connection.inputStream else connection.errorStream)?.bufferedReader()?.use{it.readText()}.orEmpty()
+                val retryAfter=connection.getHeaderField("Retry-After")?.toLongOrNull()?.coerceIn(1,30) ?: 1
+                connection.disconnect()
+                if(code in setOf(429,502,503,504) && attempt<3) delay(if(code==429) retryAfter*1000 else 350L*attempt)
             } while(code in setOf(429,502,503,504) && attempt<3)
             if(code !in 200..299) ProviderResult.Blocked("Provider HTTP $code: ${raw.take(400)}") else {
                 val json=JSONObject(raw); val answer=json.optString("response")
