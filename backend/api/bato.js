@@ -95,7 +95,7 @@ export default async function handler(request, response) {
     })),
     { role: "user", content: message }
   ];
-  const requestedModel = process.env.BATO_MODEL || "openai/gpt-5.4";
+  const requestedModel = process.env.BATO_MODEL || "openai/gpt-4o-mini";
   try {
     const upstream = await fetch(GATEWAY, {
       method: "POST",
