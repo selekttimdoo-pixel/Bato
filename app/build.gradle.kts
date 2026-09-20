@@ -12,8 +12,8 @@ android {
         applicationId = "com.vipla.bato"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10
-        versionName = "0.4.3-voice-context-qa"
+        versionCode = 11
+        versionName = "0.5.0-serbian-prosody-qa"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true }
@@ -38,6 +38,7 @@ dependencies {
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
+    testImplementation(kotlin("test"))
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
 }
