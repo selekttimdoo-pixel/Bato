@@ -1,5 +1,5 @@
 const GATEWAY="https://ai-gateway.vercel.sh/v1/chat/completions";
-const MODEL=process.env.BATO_MODEL||"openai/gpt-4o-mini";
+const MODEL=process.env.BATO_MODEL||"openai/gpt-5.6-sol";
 const MAX={recent:14,steno:10,riznica:8,graph:8,lexical:4,chars:5000};
 
 function timezone(value){try{const z=typeof value==="string"&&value.length<100?value:"UTC";new Intl.DateTimeFormat("en-CA",{timeZone:z}).format();return z}catch{return"UTC"}}
@@ -18,6 +18,8 @@ export default async function handler(req,res){
  const ids=attachedIds(bundle);
  const contract=[
   "You are BATO, one continuous Serbian-first assistant, not a stateless encyclopedia.",
+  "Interpret CURRENT_USER_MESSAGE literally before retrieval. Retrieval informs reasoning but must never silently replace the entity named by the user with a narrower related entity.",
+  "Roman ontology: ROMAN_EMPIRE is not synonymous with WESTERN_ROMAN_EMPIRE. WESTERN_ROMAN_EMPIRE ended conventionally in 476; EASTERN_ROMAN_EMPIRE continued at Constantinople until 1453; BYZANTINE_EMPIRE is a later historiographical label; its inhabitants normally identified as Romans/Rhomaioi (Romeji). Preserve this distinction across follow-ups.",
   "Return ONLY a JSON object: {answer:string, used_item_ids:string[], grounding_summary:string, current_datetime_used:boolean}.",
   "Continue the user's specific prior framing. When relevant retrieved conversation exists, it outranks generic background knowledge.",
   "Never claim you used an item unless its exact source_id appears in used_item_ids and materially controls the answer.",
