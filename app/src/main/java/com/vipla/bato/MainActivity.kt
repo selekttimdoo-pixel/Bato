@@ -64,7 +64,7 @@ fun BatoApp(vm: MainViewModel = viewModel()) {
     Scaffold(
         topBar = { Surface(shadowElevation = 4.dp) { Column(Modifier.fillMaxWidth().padding(12.dp)) {
             Text("VIPLA / BATO COCKPIT", fontWeight = FontWeight.Bold)
-            Text("Android v0.2 · local-first · external effects are never inferred", style = MaterialTheme.typography.bodySmall)
+            Text("Android v0.3 · functional handlers · external effects are never inferred", style = MaterialTheme.typography.bodySmall)
         } } },
         bottomBar = { NavigationBar {
             BatoTab.entries.forEach { item -> NavigationBarItem(selected = tab == item, onClick = { tab = item }, icon = { Text(item.title.take(2)) }, label = { Text(item.title, maxLines = 1) }) }
@@ -75,7 +75,7 @@ fun BatoApp(vm: MainViewModel = viewModel()) {
                 BatoTab.CONVERSATION -> ConversationScreen(vm, events, ttsEnabled) { ttsEnabled = it }
                 BatoTab.COCKPIT -> CockpitScreen(vm, states)
                 BatoTab.TIMELINE -> TimelineScreen(events)
-                BatoTab.VAULT -> VaultScreen()
+                BatoTab.VAULT -> VaultScreen(vm)
                 BatoTab.SEARCH -> SearchScreen(vm)
                 BatoTab.DIAGNOSTICS -> DiagnosticsScreen(vm, states, log)
             }
@@ -86,38 +86,72 @@ fun BatoApp(vm: MainViewModel = viewModel()) {
 @Composable
 private fun ConversationScreen(vm: MainViewModel, events: List<StenoEvent>, ttsEnabled: Boolean, setTts: (Boolean) -> Unit) {
     var input by remember { mutableStateOf("") }
-    var endpoint by remember { mutableStateOf(vm.endpoint()) }
     var listening by remember { mutableStateOf(false) }
     var speechError by remember { mutableStateOf<String?>(null) }
     val busy by vm.busy.collectAsStateWithLifecycle()
     val context = LocalContext.current
-    val recognizer = remember { SpeechRecognizer.createSpeechRecognizer(context) }
-    DisposableEffect(recognizer) { onDispose { recognizer.destroy() } }
+    val recognitionAvailable = remember { SpeechRecognizer.isRecognitionAvailable(context) }
+    val recognizer = remember(recognitionAvailable) { if (recognitionAvailable) SpeechRecognizer.createSpeechRecognizer(context) else null }
+    DisposableEffect(recognizer) { onDispose { recognizer?.destroy() } }
 
-    val startListening = {
+    val startListening = startListening@{
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            listening = false
+            speechError = "Microphone permission is not granted. Tap MIC to request it."
+            vm.recordMicState("PERMISSION_REQUIRED", speechError!!)
+            return@startListening
+        }
+        if (!SpeechRecognizer.isRecognitionAvailable(context) || recognizer == null) {
+            listening = false
+            speechError = "BLOCKED: no Android speech recognition service is installed"
+            vm.recordMicState("BLOCKED", speechError!!)
+            return@startListening
+        }
         recognizer.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) { listening = true; speechError = null }
-            override fun onBeginningOfSpeech() {}
+            override fun onReadyForSpeech(params: Bundle?) { listening = true; speechError = null; vm.recordMicState("RECORDING", "Android SpeechRecognizer opened the in-app microphone") }
+            override fun onBeginningOfSpeech() { vm.recordMicState("AUDIO_DETECTED", "SpeechRecognizer reported beginning of speech") }
             override fun onRmsChanged(rmsdB: Float) {}
             override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() { listening = false }
-            override fun onError(error: Int) { listening = false; speechError = "Microphone/transcription error $error" }
+            override fun onEndOfSpeech() { listening = false; vm.recordMicState("CAPTURE_COMPLETE", "Audio capture ended; waiting for transcription") }
+            override fun onError(error: Int) {
+                recognizer.cancel()
+                listening = false
+                val recoverable = error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT || error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY
+                speechError = when (error) {
+                    SpeechRecognizer.ERROR_NO_MATCH -> "No speech recognized — try again."
+                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech heard — tap MIC and try again."
+                    SpeechRecognizer.ERROR_AUDIO -> "Audio capture error — check the microphone and try again."
+                    SpeechRecognizer.ERROR_CLIENT -> "Speech recognition session ended — tap MIC to retry."
+                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission is missing — tap MIC to grant it."
+                    SpeechRecognizer.ERROR_NETWORK -> "Speech recognition network error — check the connection and retry."
+                    SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "Speech recognition network timeout — try again."
+                    SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "Speech recognizer was busy — it is ready to retry."
+                    SpeechRecognizer.ERROR_SERVER -> "Speech recognition service error — try again."
+                    else -> "Speech recognition failed (code $error) — try again."
+                }
+                vm.recordMicState(if (recoverable) "READY_RETRY" else "FAIL", "SpeechRecognizer code=$error; ${speechError!!}")
+            }
             override fun onResults(results: Bundle?) {
                 listening = false
                 val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-                if (!text.isNullOrBlank()) vm.sendMessage(text, "IN_APP_MICROPHONE")
+                if (!text.isNullOrBlank()) { vm.recordMicState("TRANSCRIBED", text); vm.sendMessage(text, "IN_APP_MICROPHONE") }
+                else { speechError = "Transcription returned no text"; vm.recordMicState("FAIL", speechError!!) }
             }
             override fun onPartialResults(partialResults: Bundle?) {}
             override fun onEvent(eventType: Int, params: Bundle?) {}
         })
+        recognizer.cancel()
+        speechError = null
         recognizer.startListening(Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "sr-RS")
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
         })
     }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) startListening() else speechError = "RECORD_AUDIO permission blocked"
+        if (granted) { vm.recordMicState("PERMISSION_GRANTED", "RECORD_AUDIO granted at runtime"); startListening() }
+        else { speechError = "RECORD_AUDIO permission denied"; vm.recordMicState("BLOCKED", speechError!!) }
     }
 
     Column(Modifier.fillMaxSize().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -125,8 +159,7 @@ private fun ConversationScreen(vm: MainViewModel, events: List<StenoEvent>, ttsE
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("Spoken response / TTS", Modifier.weight(1f)); Switch(checked = ttsEnabled, onCheckedChange = setTts)
         }
-        OutlinedTextField(value = endpoint, onValueChange = { endpoint = it }, modifier = Modifier.fillMaxWidth(), label = { Text("Provider-neutral backend endpoint") }, supportingText = { Text("Blank = correctly BLOCKED; no fake AI response") })
-        Button(onClick = { vm.saveEndpoint(endpoint) }) { Text("Save bridge endpoint") }
+        Text("BATO bridge: ${vm.endpoint()}", style = MaterialTheme.typography.labelSmall)
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             items(events.reversed().takeLast(100), key = { it.id }) { event ->
                 Surface(color = when (event.role) { "USER" -> Color(0xFF173B33); "ASSISTANT" -> Color(0xFF20334A); else -> Color(0xFF4A321C) }, shape = RoundedCornerShape(10.dp)) {
@@ -139,9 +172,10 @@ private fun ConversationScreen(vm: MainViewModel, events: List<StenoEvent>, ttsE
             OutlinedTextField(value = input, onValueChange = { input = it }, modifier = Modifier.weight(1f), label = { Text("Message") })
             Button(onClick = { vm.sendMessage(input); input = "" }, enabled = !busy, modifier = Modifier.padding(start = 6.dp)) { Text("Send") }
             Button(onClick = {
-                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startListening()
+                if (listening) { recognizer?.stopListening(); listening = false; vm.recordMicState("STOP_REQUESTED", "User stopped in-app capture") }
+                else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startListening()
                 else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-            }, enabled = !listening && !busy, modifier = Modifier.padding(start = 6.dp)) { Text(if (listening) "…" else "🎙 MIC") }
+            }, enabled = !busy, modifier = Modifier.padding(start = 6.dp)) { Text(if (listening) "■ STOP" else "🎙 MIC") }
         }
     }
 }
@@ -158,24 +192,25 @@ private fun CockpitScreen(vm: MainViewModel, states: List<ControlState>) {
                 val state = map[spec.code]
                 val light = state?.light ?: "AMBER"
                 Surface(shape = RoundedCornerShape(8.dp), color = when (light) { "GREEN" -> Color(0xFF145A32); "DARK" -> Color(0xFF242424); else -> Color(0xFF6A4D13) }, modifier = Modifier.fillMaxWidth().clickable { selected = spec }) {
-                    Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) { Text(spec.code, fontWeight = FontWeight.Bold); Text(spec.name, Modifier.padding(start = 10.dp).weight(1f)); Text(light) }
+                    Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) { Text(spec.code, fontWeight = FontWeight.Bold); Text(spec.name, Modifier.padding(start = 10.dp).weight(1f)); Text(light); Button(onClick = { vm.executeControl(spec) }, modifier = Modifier.padding(start = 6.dp)) { Text("RUN") } }
                 }
             }
         }
     }
-    selected?.let { spec -> ControlDetail(spec, map[spec.code], onDismiss = { selected = null }, onTest = { vm.testOne(spec) }) }
+    selected?.let { spec -> ControlDetail(spec, map[spec.code], onDismiss = { selected = null }, onExecute = { vm.executeControl(spec) }, onTest = { vm.testOne(spec) }) }
 }
 
 @Composable
-private fun ControlDetail(spec: ControlSpec, state: ControlState?, onDismiss: () -> Unit, onTest: () -> Unit) {
-    AlertDialog(onDismissRequest = onDismiss, confirmButton = { Button(onClick = onTest) { Text("Run PASS + FORCE-BLOCK") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+private fun ControlDetail(spec: ControlSpec, state: ControlState?, onDismiss: () -> Unit, onExecute: () -> Unit, onTest: () -> Unit) {
+    AlertDialog(onDismissRequest = onDismiss, confirmButton = { Row { Button(onClick = onExecute) { Text("Execute") }; Button(onClick = onTest, modifier = Modifier.padding(start = 6.dp)) { Text("Behavior test") } } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
         title = { Text("${spec.code} · ${spec.name}") }, text = { Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
             Text("CODED: YES")
-            Text("INTEGRATED: YES — Android LocalGuardEngine + persisted state/event log")
+            Text("INTEGRATED: YES — ${state?.handler ?: "not executed on this install"}")
             Text("FORCE-FAIL: ${if (state?.forcedBlockPass == true) "PASS" else "NOT RUN ON THIS INSTALL"}")
             Text("EFFECT-PROVEN: ${if (state?.effectProven == true) "YES" else "NO"}")
             Text("LIGHT: ${state?.light ?: "AMBER"}")
-            Text("Evidence: ${spec.evidence}")
+            Text("Observable result: ${state?.observableResult ?: "not executed"}")
+            Text("Evidence: ${state?.evidence ?: spec.evidence}")
             Text("Next physical/live test: ${spec.nextPhysicalTest}")
         } })
 }
@@ -191,23 +226,17 @@ private fun TimelineScreen(events: List<StenoEvent>) = Column(Modifier.fillMaxSi
 }
 
 @Composable
-private fun VaultScreen() {
-    val hooks = listOf(
-        "STENO WAL" to "ACTIVE local Room WAL; raw events committed before remote call",
-        "FAST GRAPH" to "HOOK READY; provider/context adapter receives graph capability flag",
-        "Riznica knowledge vault" to "HOOK READY; local-first bridge schema present",
-        "Active Serbian Lexicon" to "HOOK READY; semantic layer declared, corpus not bundled",
-        "Serbian Grammar Graph" to "HOOK READY; grammar layer declared, corpus not bundled",
-        "Temporal/session/segment metadata" to "ACTIVE; every STENO row carries timestamps, session and segment IDs"
-    )
-    Column(Modifier.fillMaxSize().padding(10.dp)) { Text("Vault / Riznica architecture", style = MaterialTheme.typography.titleLarge); LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) { items(hooks) { (name, status) -> Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFF252B36)) { Column(Modifier.fillMaxWidth().padding(10.dp)) { Text(name, fontWeight = FontWeight.Bold); Text(status) } } } } }
+private fun VaultScreen(vm: MainViewModel) {
+    val objects by vm.knowledge.collectAsStateWithLifecycle()
+    Column(Modifier.fillMaxSize().padding(10.dp)) { Text("Vault / Riznica · persisted objects", style = MaterialTheme.typography.titleLarge); LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 8.dp)) { items(objects, key = { it.key }) { item -> Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFF252B36)) { Column(Modifier.fillMaxWidth().padding(10.dp)) { Text("${item.layer} · ${item.key}", fontWeight = FontWeight.Bold); Text(item.content); Text(DateFormat.getDateTimeInstance().format(Date(item.updatedAt)), style = MaterialTheme.typography.labelSmall) } } } } }
 }
 
 @Composable
 private fun SearchScreen(vm: MainViewModel) {
     var query by remember { mutableStateOf("") }
     val results by vm.searchResults.collectAsStateWithLifecycle()
-    Column(Modifier.fillMaxSize().padding(10.dp)) { Text("Search local STENO", style = MaterialTheme.typography.titleLarge); Row { OutlinedTextField(query, { query = it }, Modifier.weight(1f), label = { Text("Exact or partial text") }); Button({ vm.search(query) }, Modifier.padding(start = 6.dp)) { Text("Search") } }; LazyColumn { items(results, key = { it.id }) { Text("${it.role}: ${it.rawText}", Modifier.fillMaxWidth().padding(8.dp)) } } }
+    val knowledgeResults by vm.knowledgeSearchResults.collectAsStateWithLifecycle()
+    Column(Modifier.fillMaxSize().padding(10.dp)) { Text("Search STENO + Riznica", style = MaterialTheme.typography.titleLarge); Row { OutlinedTextField(query, { query = it }, Modifier.weight(1f), label = { Text("Exact or partial text") }); Button({ vm.search(query) }, Modifier.padding(start = 6.dp)) { Text("Search") } }; LazyColumn { items(knowledgeResults, key = { it.key }) { Text("${it.layer}: ${it.content}", Modifier.fillMaxWidth().padding(8.dp)) }; items(results, key = { "s-${it.id}" }) { Text("${it.role}: ${it.rawText}", Modifier.fillMaxWidth().padding(8.dp)) } } }
 }
 
 @Composable
