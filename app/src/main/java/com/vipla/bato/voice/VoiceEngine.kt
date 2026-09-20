@@ -34,6 +34,16 @@ class RemoteBatoVoiceEngine(private val context: Context, private val endpoint: 
     @Volatile private var generation = 0L
     override fun speak(text: String, onResult: (VoiceResult) -> Unit) {
         val normalized = SerbianSpeechNormalizer.normalize(text)
+        val pronunciation = SerbianProsodyResolver.resolve(normalized)
+        if (!pronunciation.resolved) {
+            onResult(VoiceResult(
+                "BLOCKED", "SERBIAN_PROSODY_LAYER", "BATO_ACCENT_PROSODY_LEXICON_1", "NONE",
+                "sr-RS", "BLOCKED_UNRESOLVED_PRONUNCIATION", "NONE", 0, normalized,
+                "UNRESOLVED_TOKENS=" + pronunciation.unresolved.joinToString(",") +
+                    "; TTS was not called and did not guess stress"
+            ))
+            return
+        }
         val requestGeneration = synchronized(this) { generation += 1; generation }
         Thread {
             var connection: HttpsURLConnection? = null
@@ -42,8 +52,13 @@ class RemoteBatoVoiceEngine(private val context: Context, private val endpoint: 
                 connection = URL(endpoint).openConnection() as HttpsURLConnection
                 connection.requestMethod = "POST"; connection.connectTimeout = 15_000; connection.readTimeout = 90_000
                 connection.doOutput = true; connection.setRequestProperty("Content-Type", "application/json")
-                val escaped = normalized.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
-                connection.outputStream.use { it.write("{\"text\":\"$escaped\"}".toByteArray()) }
+                fun json(value: String) = value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+                val requestBody = "{\"text\":\"" + json(normalized) +
+                    "\",\"pronunciation\":{\"resolved\":true,\"ssml\":\"" + json(pronunciation.ssml) +
+                    "\",\"batoMarkup\":\"" + json(pronunciation.batoMarkup) +
+                    "\",\"lexiconVersion\":\"" + json(pronunciation.lexiconVersion) +
+                    "\",\"grammarVersion\":\"" + json(pronunciation.grammarVersion) + "\"}}"
+                connection.outputStream.use { it.write(requestBody.toByteArray()) }
                 val http = connection.responseCode
                 if (http !in 200..299) {
                     val detail = connection.errorStream?.bufferedReader()?.use { it.readText() }.orEmpty().take(400)
@@ -62,7 +77,10 @@ class RemoteBatoVoiceEngine(private val context: Context, private val endpoint: 
                     connection.getHeaderField("X-Bato-Voice-Locale") ?: "sr-RS",
                     connection.getHeaderField("X-Bato-Voice-Provenance") ?: "QA_CANDIDATE",
                     connection.getHeaderField("X-Bato-Voice-Fallback") ?: "NONE", http, normalized,
-                    "Remote audio body persisted before decode", format, bytes, "PENDING", "NOT_STARTED"
+                    "Remote audio persisted; PROSODY_RESOLUTION=" +
+                        (connection.getHeaderField("X-Bato-Prosody-Resolution") ?: "UNREPORTED") +
+                        "; LEXICON=" + (connection.getHeaderField("X-Bato-Prosody-Lexicon") ?: "UNREPORTED"),
+                    format, bytes, "PENDING", "NOT_STARTED"
                 )
                 onResult(base)
                 val file = requireNotNull(audioFile)
